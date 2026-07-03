@@ -829,6 +829,7 @@ set(pcsx2DebugToolsSources
 	DebugTools/IpuTrace.cpp
 	DebugTools/MemTrace.cpp
 	DebugTools/Spu2Trace.cpp
+	DebugTools/VifTrace.cpp
 	DebugTools/VuTrace.cpp
 	DebugTools/ExpressionParser.cpp
 	DebugTools/MIPSAnalyst.cpp
@@ -854,6 +855,7 @@ set(pcsx2DebugToolsHeaders
 	DebugTools/IpuTrace.h
 	DebugTools/MemTrace.h
 	DebugTools/Spu2Trace.h
+	DebugTools/VifTrace.h
 	DebugTools/VuTrace.h
 	DebugTools/ExpressionParser.h
 	DebugTools/MIPSAnalyst.h

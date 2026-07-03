@@ -9,6 +9,7 @@
 #include "pcsx2/DebugTools/IpuTrace.h"
 #include "pcsx2/DebugTools/MemTrace.h"
 #include "pcsx2/DebugTools/Spu2Trace.h"
+#include "pcsx2/DebugTools/VifTrace.h"
 #include "pcsx2/DebugTools/VuTrace.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/IopMem.h"
@@ -43,6 +44,7 @@ namespace
 		std::string gs_output_path;
 		std::string ipu_output_path;
 		std::string spu2_output_path;
+		std::string vif_output_path;
 		std::string vu_output_path;
 		std::string gs_debug_dump_directory;
 		std::string iop_dump_path;
@@ -55,6 +57,7 @@ namespace
 		u64 max_gs_records = 0;
 		u64 max_ipu_records = 0;
 		u64 max_spu2_records = 0;
+		u64 max_vif_records = 0;
 		u64 max_vu_instructions = DEFAULT_MAX_INSTRUCTIONS;
 		u64 max_vu_records = 0;
 		u64 ee_skip_records = 0;
@@ -63,6 +66,7 @@ namespace
 		u64 gs_skip_records = 0;
 		u64 ipu_skip_records = 0;
 		u64 spu2_skip_records = 0;
+		u64 vif_skip_records = 0;
 		u64 vu_skip_records = 0;
 		u64 mem_hash_interval = Pcsx2Trace::MemTraceDefaultHashInterval;
 		u64 iop_dump_address = 0;
@@ -93,7 +97,7 @@ namespace
 	void PrintUsage(const char* program)
 	{
 		std::fprintf(stderr,
-			"usage: %s <bios-file-or-dir> [elf-or-disc] (--out trace.bin | --iop-out trace.bin | --mem-out trace.bin | --gs-out trace.bin | --ipu-out trace.bin | --spu2-out trace.bin | --vu-out trace.bin) [options]\n"
+			"usage: %s <bios-file-or-dir> [elf-or-disc] (--out trace.bin | --iop-out trace.bin | --mem-out trace.bin | --gs-out trace.bin | --ipu-out trace.bin | --spu2-out trace.bin | --vif-out trace.bin | --vu-out trace.bin) [options]\n"
 			"\n"
 			"options:\n"
 			"  --boot-bios           Boot the BIOS with no disc and no ELF fast-boot override.\n"
@@ -111,6 +115,7 @@ namespace
 			"  --gs-out trace.bin    Write decoded GS register/image transfer records.\n"
 			"  --ipu-out trace.bin   Write IPU command/output hash records.\n"
 			"  --spu2-out trace.bin  Write SPU2 48 kHz mixer output records.\n"
+			"  --vif-out trace.bin   Write VIF command and unpack effect records.\n"
 			"  --vu-out trace.bin    Write VU0/VU1 interpreter micro-step records.\n"
 			"  --gs-state-snapshots  Include full GSState/local-memory hash sections in the GS trace.\n"
 			"  --gs-state-full       With --gs-state-snapshots, write raw leaf GS state bytes to trace.bin.state.bin.\n"
@@ -127,6 +132,7 @@ namespace
 			"                         Stop the GS trace after N EE pre-instruction hooks (default: --max-instructions).\n"
 			"  --max-ipu-records N    Optional cap on IPU records.\n"
 			"  --max-spu2-records N   Optional cap on SPU2 records.\n"
+			"  --max-vif-records N    Optional cap on VIF command/unpack records.\n"
 			"  --max-vu-records N     Optional cap on VU records.\n"
 			"  --max-vu-instructions N\n"
 			"                         Stop the VU trace after N EE pre-instruction hooks (default: --max-instructions).\n"
@@ -136,6 +142,7 @@ namespace
 			"  --gs-skip-records N   Skip N decoded GS records before writing.\n"
 			"  --ipu-skip-records N  Skip N IPU records before writing.\n"
 			"  --spu2-skip-records N Skip N SPU2 records before writing.\n"
+			"  --vif-skip-records N  Skip N VIF records before writing.\n"
 			"  --vu-skip-records N   Skip N VU records before writing.\n"
 			"  --mem-hash-interval N Hash selected memory regions every N EE pre-instruction records.\n"
 			"  --mem-regions LIST    MEM regions or all: ee_ram,iop_ram,ee_scratchpad,vu0_micro,\n"
@@ -360,6 +367,15 @@ namespace
 				}
 				options->spu2_output_path = argv[i];
 			}
+			else if (arg == "--vif-out")
+			{
+				if (++i >= argc)
+				{
+					std::fprintf(stderr, "--vif-out requires a path.\n");
+					return false;
+				}
+				options->vif_output_path = argv[i];
+			}
 			else if (arg == "--vu-out")
 			{
 				if (++i >= argc)
@@ -461,6 +477,14 @@ namespace
 					return false;
 				}
 			}
+			else if (arg == "--max-vif-records")
+			{
+				if (++i >= argc || !ParseU64(argv[i], &options->max_vif_records))
+				{
+					std::fprintf(stderr, "--max-vif-records requires an integer.\n");
+					return false;
+				}
+			}
 			else if (arg == "--max-ipu-records")
 			{
 				if (++i >= argc || !ParseU64(argv[i], &options->max_ipu_records))
@@ -525,6 +549,14 @@ namespace
 				if (++i >= argc || !ParseU64(argv[i], &options->spu2_skip_records))
 				{
 					std::fprintf(stderr, "--spu2-skip-records requires an integer.\n");
+					return false;
+				}
+			}
+			else if (arg == "--vif-skip-records")
+			{
+				if (++i >= argc || !ParseU64(argv[i], &options->vif_skip_records))
+				{
+					std::fprintf(stderr, "--vif-skip-records requires an integer.\n");
 					return false;
 				}
 			}
@@ -660,7 +692,7 @@ namespace
 			(options->output_path.empty() && options->iop_output_path.empty() &&
 				options->mem_output_path.empty() && options->gs_output_path.empty() &&
 				options->ipu_output_path.empty() && options->spu2_output_path.empty() &&
-				options->vu_output_path.empty()) ||
+				options->vif_output_path.empty() && options->vu_output_path.empty()) ||
 			(!options->boot_bios_only && options->elf_path.empty()))
 		{
 			PrintUsage(argv[0]);
@@ -840,6 +872,8 @@ namespace
 		if (output_path_for_defaults.empty())
 			output_path_for_defaults = options.spu2_output_path;
 		if (output_path_for_defaults.empty())
+			output_path_for_defaults = options.vif_output_path;
+		if (output_path_for_defaults.empty())
 			output_path_for_defaults = options.vu_output_path;
 		EmuFolders::DataRoot = options.data_root.empty() ?
 			Path::Combine(Path::GetDirectory(output_path_for_defaults), "pcsx2-trace-data") :
@@ -932,6 +966,7 @@ namespace
 		bool gs_trace_started = false;
 		bool ipu_trace_started = false;
 		bool spu2_trace_started = false;
+		bool vif_trace_started = false;
 		bool vu_trace_started = false;
 		if (!options.output_path.empty())
 		{
@@ -1064,6 +1099,33 @@ namespace
 			}
 			spu2_trace_started = true;
 		}
+		if (!options.vif_output_path.empty())
+		{
+			Pcsx2Trace::VifTraceConfig trace_config;
+			trace_config.output_path = options.vif_output_path;
+			trace_config.max_records = options.max_vif_records;
+			trace_config.skip_records = options.vif_skip_records;
+			trace_config.wait_for_elf_entry = options.wait_for_elf_entry;
+			if (!Pcsx2Trace::StartVifTrace(trace_config, &error))
+			{
+				std::fprintf(stderr, "Failed to start VIF trace: %s\n", error.GetDescription().c_str());
+				if (spu2_trace_started)
+					Pcsx2Trace::StopSpu2Trace();
+				if (ipu_trace_started)
+					Pcsx2Trace::StopIpuTrace();
+				if (gs_trace_started)
+					Pcsx2Trace::StopGsTrace();
+				if (mem_trace_started)
+					Pcsx2Trace::StopMemTrace();
+				if (iop_trace_started)
+					Pcsx2Trace::StopIopTrace();
+				if (ee_trace_started)
+					Pcsx2Trace::StopEeTrace();
+				VMManager::Internal::CPUThreadShutdown();
+				return 2;
+			}
+			vif_trace_started = true;
+		}
 		if (!options.vu_output_path.empty())
 		{
 			Pcsx2Trace::VuTraceConfig trace_config;
@@ -1076,6 +1138,8 @@ namespace
 			if (!Pcsx2Trace::StartVuTrace(trace_config, &error))
 			{
 				std::fprintf(stderr, "Failed to start VU trace: %s\n", error.GetDescription().c_str());
+				if (vif_trace_started)
+					Pcsx2Trace::StopVifTrace();
 				if (spu2_trace_started)
 					Pcsx2Trace::StopSpu2Trace();
 				if (ipu_trace_started)
@@ -1120,6 +1184,8 @@ namespace
 				error.GetDescription().c_str());
 			if (vu_trace_started)
 				Pcsx2Trace::StopVuTrace();
+			if (vif_trace_started)
+				Pcsx2Trace::StopVifTrace();
 			if (spu2_trace_started)
 				Pcsx2Trace::StopSpu2Trace();
 			if (ipu_trace_started)
@@ -1157,11 +1223,16 @@ namespace
 		const u64 spu2_records = Pcsx2Trace::GetSpu2TraceRecordsWritten();
 		const bool spu2_hit_limit = Pcsx2Trace::DidSpu2TraceHitLimit();
 		const std::string spu2_trace_error = Pcsx2Trace::GetSpu2TraceError();
+		const u64 vif_records = Pcsx2Trace::GetVifTraceRecordsWritten();
+		const bool vif_hit_limit = Pcsx2Trace::DidVifTraceHitLimit();
+		const std::string vif_trace_error = Pcsx2Trace::GetVifTraceError();
 		const u64 vu_records = Pcsx2Trace::GetVuTraceRecordsWritten();
 		const bool vu_hit_limit = Pcsx2Trace::DidVuTraceHitLimit();
 		const std::string vu_trace_error = Pcsx2Trace::GetVuTraceError();
 		if (vu_trace_started)
 			Pcsx2Trace::StopVuTrace();
+		if (vif_trace_started)
+			Pcsx2Trace::StopVifTrace();
 		if (spu2_trace_started)
 			Pcsx2Trace::StopSpu2Trace();
 		if (ipu_trace_started)
@@ -1222,6 +1293,12 @@ namespace
 				static_cast<unsigned long long>(spu2_records), spu2_trace_error.c_str());
 			return 4;
 		}
+		if (!vif_trace_error.empty())
+		{
+			std::fprintf(stderr, "VIF trace failed after %llu records: %s\n",
+				static_cast<unsigned long long>(vif_records), vif_trace_error.c_str());
+			return 4;
+		}
 		if (!vu_trace_error.empty())
 		{
 			std::fprintf(stderr, "VU trace failed after %llu records: %s\n",
@@ -1265,6 +1342,12 @@ namespace
 				static_cast<unsigned long long>(spu2_records), options.spu2_output_path.c_str(),
 				spu2_hit_limit ? " (hit limit)" : "");
 		}
+		if (vif_trace_started)
+		{
+			std::fprintf(stdout, "wrote %llu VIF command/unpack records to %s%s\n",
+				static_cast<unsigned long long>(vif_records), options.vif_output_path.c_str(),
+				vif_hit_limit ? " (hit limit)" : "");
+		}
 		if (vu_trace_started)
 		{
 			std::fprintf(stdout, "wrote %llu VU interpreter records to %s%s\n",
@@ -1279,7 +1362,7 @@ namespace
 				options.iop_dump_path.c_str());
 		}
 		return (ee_hit_limit || iop_hit_limit || mem_hit_limit || gs_hit_limit || ipu_hit_limit ||
-			spu2_hit_limit || vu_hit_limit) ? 0 : 1;
+			spu2_hit_limit || vif_hit_limit || vu_hit_limit) ? 0 : 1;
 	}
 } // namespace
 

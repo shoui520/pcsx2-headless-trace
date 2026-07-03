@@ -14,6 +14,7 @@
 #include "DebugTools/IopTrace.h"
 #include "DebugTools/IpuTrace.h"
 #include "DebugTools/Spu2Trace.h"
+#include "DebugTools/VifTrace.h"
 #include "DebugTools/VuTrace.h"
 
 #include "common/FastJmp.h"
@@ -687,6 +688,7 @@ static void intExecute()
 					Pcsx2Trace::NotifyIopElfEntry(cpuRegs.pc);
 					Pcsx2Trace::NotifyIpuElfEntry(cpuRegs.pc);
 					Pcsx2Trace::NotifySpu2ElfEntry(cpuRegs.pc);
+					Pcsx2Trace::NotifyVifElfEntry(cpuRegs.pc);
 					Pcsx2Trace::NotifyVuElfEntry(cpuRegs.pc);
 					VMManager::Internal::EntryPointCompilingOnCPUThread();
 					break;
