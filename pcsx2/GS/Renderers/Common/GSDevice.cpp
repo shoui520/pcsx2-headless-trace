@@ -16,7 +16,9 @@
 #include "common/StringUtil.h"
 #include "common/Threading.h"
 
+#ifndef PCSX2_TRACE_ONLY
 #include "imgui.h"
+#endif
 
 #include <algorithm>
 #include <ostream>
@@ -487,6 +489,9 @@ void GSDevice::InvalidateRenderTarget(GSTexture* t)
 
 void GSDevice::UpdateImGuiTextures()
 {
+#ifdef PCSX2_TRACE_ONLY
+	return;
+#else
 	// TODO, use ImDrawData https://github.com/ocornut/imgui/issues/8597#issuecomment-2871835598
 	for (ImTextureData* im_tex : ImGui::GetPlatformIO().Textures)
 	{
@@ -561,12 +566,16 @@ void GSDevice::UpdateImGuiTextures()
 			default:
 				pxAssert(false);
 				break;
-		}
+			}
 	}
+#endif
 }
 
 void GSDevice::DestroyImGuiTextures()
 {
+#ifdef PCSX2_TRACE_ONLY
+	return;
+#else
 	if (!ImGui::GetCurrentContext())
 		return;
 
@@ -587,6 +596,7 @@ void GSDevice::DestroyImGuiTextures()
 			im_tex->Status = ImTextureStatus_Destroyed;
 		}
 	}
+#endif
 }
 
 void GSDevice::TextureRecycleDeleter::operator()(GSTexture* const tex)

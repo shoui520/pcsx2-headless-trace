@@ -8,6 +8,12 @@
 #include "Cache.h"
 
 #include "DebugTools/Breakpoints.h"
+#include "DebugTools/EeTrace.h"
+#include "DebugTools/GsTrace.h"
+#include "DebugTools/MemTrace.h"
+#include "DebugTools/IpuTrace.h"
+#include "DebugTools/Spu2Trace.h"
+#include "DebugTools/VuTrace.h"
 
 #include "common/FastJmp.h"
 
@@ -177,6 +183,36 @@ static void execI()
 	cpuRegs.code = memRead32( pc );
 
 	const OPCODE& opcode = GetCurrentInstruction();
+	if (Pcsx2Trace::RecordEePreInstruction(pc, cpuRegs.code))
+	{
+		Cpu->ExitExecution();
+		return;
+	}
+	if (Pcsx2Trace::RecordMemPreEeInstruction(pc))
+	{
+		Cpu->ExitExecution();
+		return;
+	}
+	if (Pcsx2Trace::RecordGsPreEeInstruction(pc))
+	{
+		Cpu->ExitExecution();
+		return;
+	}
+	if (Pcsx2Trace::DidIpuTraceHitLimit())
+	{
+		Cpu->ExitExecution();
+		return;
+	}
+	if (Pcsx2Trace::RecordVuPreEeInstruction(pc))
+	{
+		Cpu->ExitExecution();
+		return;
+	}
+	if (Pcsx2Trace::DidSpu2TraceHitLimit())
+	{
+		Cpu->ExitExecution();
+		return;
+	}
 #if 0
 	static long int runs = 0;
 	//use this to find out what opcodes your game uses. very slow! (rama)
@@ -644,6 +680,12 @@ static void intExecute()
 				}
 				else if (cpuRegs.pc == elf_entry_point)
 				{
+					Pcsx2Trace::NotifyEeElfEntry(cpuRegs.pc);
+					Pcsx2Trace::NotifyMemElfEntry(cpuRegs.pc);
+					Pcsx2Trace::NotifyGsElfEntry(cpuRegs.pc);
+					Pcsx2Trace::NotifyIpuElfEntry(cpuRegs.pc);
+					Pcsx2Trace::NotifySpu2ElfEntry(cpuRegs.pc);
+					Pcsx2Trace::NotifyVuElfEntry(cpuRegs.pc);
 					VMManager::Internal::EntryPointCompilingOnCPUThread();
 					break;
 				}

@@ -8,6 +8,7 @@
 
 #include "R5900OpcodeTables.h"
 #include "DebugTools/Breakpoints.h"
+#include "DebugTools/IopTrace.h"
 #include "IopBios.h"
 #include "IopHw.h"
 
@@ -224,6 +225,13 @@ static __fi void execI()
 	}
 
 	psxRegs.code = iopMemRead32(psxRegs.pc);
+	if (Pcsx2Trace::RecordIopPreInstruction(psxRegs.pc, psxRegs.code))
+	{
+		psxRegs.iopCycleEE = 0;
+		branch2 = 1;
+		Cpu->ExitExecution();
+		return;
+	}
 
 		PSXCPU_LOG("%s", disR3000AF(psxRegs.code, psxRegs.pc));
 

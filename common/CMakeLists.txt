@@ -34,7 +34,6 @@ target_sources(common PRIVATE
 	Timer.cpp
 	WAVWriter.cpp
 	WindowInfo.cpp
-	YAML.cpp
 )
 
 target_sources(common PRIVATE
@@ -84,6 +83,10 @@ target_sources(common PRIVATE
 	WrappedMemCopy.h
 	YAML.h
 )
+
+if(NOT PCSX2_TRACE_ONLY)
+	target_sources(common PRIVATE YAML.cpp)
+endif()
 
 if(ARCH_X86)
 	target_sources(common PRIVATE
@@ -168,10 +171,14 @@ else()
 	)
 	target_link_libraries(common PRIVATE
 		${DBUS_LINK_LIBRARIES}
-		X11::X11
-		X11::Xrandr
-		X11::Xi
 	)
+	if(X11_API)
+		target_link_libraries(common PRIVATE
+			X11::X11
+			X11::Xrandr
+			X11::Xi
+		)
+	endif()
 	if(USE_BACKTRACE)
 		target_compile_definitions(common PRIVATE "HAS_LIBBACKTRACE=1")
 		target_link_libraries(common PRIVATE libbacktrace::libbacktrace)
@@ -211,8 +218,11 @@ target_link_libraries(common PRIVATE
 target_link_libraries(common PUBLIC
 	fmt::fmt
 	fast_float
-	ryml::ryml
 )
+
+if(NOT PCSX2_TRACE_ONLY)
+	target_link_libraries(common PUBLIC ryml::ryml)
+endif()
 
 fixup_file_properties(common)
 target_compile_features(common PUBLIC cxx_std_17)

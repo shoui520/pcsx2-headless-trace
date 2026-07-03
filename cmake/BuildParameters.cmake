@@ -9,11 +9,16 @@ include(GNUInstallDirs)
 option(ENABLE_TESTS "Enables building the unit tests" ON)
 option(ENABLE_QT_UI "Enables building the PCSX2 Qt interface." ON)
 option(ENABLE_GSRUNNER "Enables building the GSRunner by default.  It can still be built with `make pcsx2-gsrunner` otherwise." OFF)
+option(PCSX2_TRACE_ONLY "Build the headless trace oracle without SDL-backed host input/audio glue." OFF)
 option(LTO_PCSX2_CORE "Enable LTO/IPO/LTCG on the subset of pcsx2 that benefits most from it but not anything else")
 option(USE_VTUNE "Plug VTUNE to profile GS JIT.")
 option(PACKAGE_MODE "Use this option to ease packaging of PCSX2 (developer/distribution option)")
 option(BUNDLE_EMOJI_FONT "Bundles Noto Color Emoji for systems whose system emoji font isn't usable by freetype" ON)
 option(POSITION_INDEPENDENT_CODE "Generate position-independent code. It is recommended that you leave this on." ON)
+
+if(PCSX2_TRACE_ONLY)
+	list(APPEND PCSX2_DEFS PCSX2_TRACE_ONLY=1)
+endif()
 
 #-------------------------------------------------------------------------------
 # Graphical option

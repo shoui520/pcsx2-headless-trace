@@ -20,6 +20,7 @@
 #include "GS/Renderers/Null/GSRendererNull.h"
 #include "GS/Renderers/HW/GSRendererHW.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
+#include "DebugTools/GsTrace.h"
 #include "VMManager.h"
 
 #ifdef ENABLE_OPENGL
@@ -346,6 +347,11 @@ bool GSopen(const Pcsx2Config::GSOptions& config, GSRendererType renderer, u8* b
 	if (renderer == GSRendererType::Auto)
 		renderer = GSUtil::GetPreferredRenderer();
 
+#ifdef PCSX2_TRACE_ONLY
+	if (renderer == GSRendererType::Null || renderer == GSRendererType::SW)
+		return OpenGSRenderer(renderer, basemem);
+#endif
+
 	bool res = OpenGSDevice(renderer, true, false, vsync_mode, allow_present_throttle);
 	if (res)
 	{
@@ -449,6 +455,24 @@ void GSvsync(u32 field, bool registers_written)
 	// get cleared in HW VSync, and may be needed for a buffered draw (FFX FMVs).
 	g_gs_renderer->Flush(GSState::VSYNC);
 	g_gs_renderer->VSync(field, registers_written, g_gs_renderer->IsIdleFrame());
+	GSTraceStateSnapshot(Pcsx2Trace::GsTraceStateTriggerVSyncStart);
+}
+
+void GSTraceStateSnapshot(u8 trigger)
+{
+	if (g_gs_renderer)
+		g_gs_renderer->TraceGsStateSnapshot(trigger);
+}
+
+const u8* GSTraceLocalMemoryData(size_t* size)
+{
+	if (!g_gs_renderer)
+	{
+		if (size)
+			*size = 0;
+		return nullptr;
+	}
+	return g_gs_renderer->TraceGsLocalMemoryData(size);
 }
 
 int GSfreeze(FreezeAction mode, freezeData* data)
@@ -510,6 +534,9 @@ void GSPresentCurrentFrame()
 
 void GSThrottlePresentation()
 {
+	if (!g_gs_device)
+		return;
+
 	if (g_gs_device->GetVSyncMode() == GSVSyncMode::FIFO)
 	{
 		// Let vsync take care of throttling.
@@ -530,18 +557,27 @@ void GSGameChanged()
 
 bool GSHasDisplayWindow()
 {
+	if (!g_gs_device)
+		return false;
+
 	pxAssert(g_gs_device);
 	return (g_gs_device->GetWindowInfo().type != WindowInfo::Type::Surfaceless);
 }
 
 void GSResizeDisplayWindow(u32 width, u32 height, float scale)
 {
+	if (!g_gs_device)
+		return;
+
 	g_gs_device->ResizeWindow(width, height, scale);
 	ImGuiManager::WindowResized();
 }
 
 void GSUpdateDisplayWindow()
 {
+	if (!g_gs_device)
+		return;
+
 	if (!g_gs_device->UpdateWindow())
 	{
 		Host::ReportErrorAsync("Error", TRANSLATE_SV("GS", "Failed to change window after update. The log may contain more information."));
@@ -553,6 +589,9 @@ void GSUpdateDisplayWindow()
 
 void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
 {
+	if (!g_gs_device)
+		return;
+
 	static constexpr std::array<const char*, static_cast<size_t>(GSVSyncMode::Count)> modes = {{
 		"Disabled",
 		"FIFO",

@@ -203,6 +203,23 @@ set(pcsx2Headers
 	VUmicro.h
 	VUops.h)
 
+if(PCSX2_TRACE_ONLY)
+	list(REMOVE_ITEM pcsx2Sources
+		Achievements.cpp
+		GameDatabase.cpp
+		GSDumpReplayer.cpp
+		SIO/Memcard/MemoryCardFolder.cpp
+	)
+	list(APPEND pcsx2Sources
+		TraceOnly/AchievementsStub.cpp
+		TraceOnly/GameDatabaseStub.cpp
+		TraceOnly/GSDumpReplayerStub.cpp
+		TraceOnly/ImGuiStub.cpp
+		TraceOnly/IOCtlSrcStub.cpp
+		TraceOnly/MemoryCardFolderStub.cpp
+	)
+endif()
+
 # CDVD sources
 set(pcsx2CDVDSources
 	CDVD/BlockdumpFileReader.cpp
@@ -365,6 +382,10 @@ set(pcsx2DEV9Headers
 	DEV9/ThreadSafeMap.h
 	)
 
+if(PCSX2_TRACE_ONLY)
+	set(pcsx2DEV9Sources TraceOnly/DEV9Stub.cpp)
+endif()
+
 # USB sources
 set(pcsx2USBSources
 	USB/USB.cpp
@@ -385,12 +406,11 @@ set(pcsx2USBSources
 	USB/usb-mic/usb-headset.cpp
 	USB/usb-mic/usb-mic.cpp
 	USB/usb-msd/usb-msd.cpp
-	USB/usb-pad/lg/lg_ff.cpp
 	USB/usb-pad/usb-buzz.cpp
 	USB/usb-pad/usb-gametrak.cpp
+	USB/usb-pad/lg/lg_ff.cpp
 	USB/usb-pad/usb-realplay.cpp
 	USB/usb-pad/usb-pad-ff.cpp
-	USB/usb-pad/usb-pad-sdl-ff.cpp
 	USB/usb-pad/usb-pad.cpp
 	USB/usb-pad/usb-seamic.cpp
 	USB/usb-pad/usb-train.cpp
@@ -424,16 +444,24 @@ set(pcsx2USBHeaders
 	USB/usb-mic/usb-headset.h
 	USB/usb-mic/usb-mic.h
 	USB/usb-msd/usb-msd.h
-	USB/usb-pad/lg/lg_ff.h
 	USB/usb-pad/usb-buzz.h
 	USB/usb-pad/usb-gametrak.h
+	USB/usb-pad/lg/lg_ff.h
 	USB/usb-pad/usb-realplay.h
-	USB/usb-pad/usb-pad-sdl-ff.h
 	USB/usb-pad/usb-pad.h
 	USB/usb-pad/usb-train.h
 	USB/usb-pad/usb-trance-vibrator.h
 	USB/usb-printer/usb-printer.h
 )
+
+if(NOT PCSX2_TRACE_ONLY)
+	list(APPEND pcsx2USBSources
+		USB/usb-pad/usb-pad-sdl-ff.cpp
+	)
+	list(APPEND pcsx2USBHeaders
+		USB/usb-pad/usb-pad-sdl-ff.h
+	)
+endif()
 
 # Host PAD
 set(pcsx2PADSources
@@ -795,6 +823,13 @@ endif()
 set(pcsx2DebugToolsSources
 	DebugTools/DebugInterface.cpp
 	DebugTools/DisassemblyManager.cpp
+	DebugTools/EeTrace.cpp
+	DebugTools/GsTrace.cpp
+	DebugTools/IopTrace.cpp
+	DebugTools/IpuTrace.cpp
+	DebugTools/MemTrace.cpp
+	DebugTools/Spu2Trace.cpp
+	DebugTools/VuTrace.cpp
 	DebugTools/ExpressionParser.cpp
 	DebugTools/MIPSAnalyst.cpp
 	DebugTools/MipsAssembler.cpp
@@ -813,6 +848,13 @@ set(pcsx2DebugToolsSources
 set(pcsx2DebugToolsHeaders
 	DebugTools/DebugInterface.h
 	DebugTools/DisassemblyManager.h
+	DebugTools/EeTrace.h
+	DebugTools/GsTrace.h
+	DebugTools/IopTrace.h
+	DebugTools/IpuTrace.h
+	DebugTools/MemTrace.h
+	DebugTools/Spu2Trace.h
+	DebugTools/VuTrace.h
 	DebugTools/ExpressionParser.h
 	DebugTools/MIPSAnalyst.h
 	DebugTools/MipsAssembler.h
@@ -829,8 +871,11 @@ set(pcsx2DebugToolsHeaders
 
 set(pcsx2HostSources
 	Host/AudioStream.cpp
-	Host/CubebAudioStream.cpp
-	Host/SDLAudioStream.cpp)
+	Host/CubebAudioStream.cpp)
+
+if(NOT PCSX2_TRACE_ONLY)
+	list(APPEND pcsx2HostSources Host/SDLAudioStream.cpp)
+endif()
 
 set(pcsx2HostHeaders
 	Host/AudioStream.h
@@ -853,16 +898,23 @@ set(pcsx2ImGuiHeaders
 	ImGui/ImGuiOverlays.h
 )
 
+if(PCSX2_TRACE_ONLY)
+	set(pcsx2ImGuiSources)
+endif()
+
 set(pcsx2InputSources
 	Input/InputManager.cpp
 	Input/InputSource.cpp
-	Input/SDLInputSource.cpp
 )
 set(pcsx2InputHeaders
 	Input/InputManager.h
 	Input/InputSource.h
-	Input/SDLInputSource.h
 )
+
+if(NOT PCSX2_TRACE_ONLY)
+	list(APPEND pcsx2InputSources Input/SDLInputSource.cpp)
+	list(APPEND pcsx2InputHeaders Input/SDLInputSource.h)
+endif()
 
 if(APPLE)
 	list(APPEND pcsx2GSSources
@@ -1116,14 +1168,16 @@ target_sources(PCSX2 PRIVATE
 
 # platform sources
 if(LINUX)
-	target_sources(PCSX2 PRIVATE
-		${pcsx2LinuxSources}
-		${pcsx2LinuxHeaders}
-		)
+	if(NOT PCSX2_TRACE_ONLY)
+		target_sources(PCSX2 PRIVATE
+			${pcsx2LinuxSources}
+			${pcsx2LinuxHeaders}
+			)
 
-	target_link_libraries(PCSX2_FLAGS INTERFACE
-		PkgConfig::LIBUDEV
-	)
+		target_link_libraries(PCSX2_FLAGS INTERFACE
+			PkgConfig::LIBUDEV
+		)
+	endif()
 endif()
 
 if(WIN32)
@@ -1148,7 +1202,6 @@ endif()
 
 target_link_libraries(PCSX2_FLAGS INTERFACE
 	common
-	imgui
 	fmt::fmt
 	libchdr
 	libzip::zip
@@ -1159,7 +1212,6 @@ target_link_libraries(PCSX2_FLAGS INTERFACE
 	simpleini
 	freesurround
 	Freetype::Freetype
-	SDL3::SDL3
 	ZLIB::ZLIB
 	LZ4::LZ4
 	SoundTouch::SoundTouch
@@ -1168,10 +1220,17 @@ target_link_libraries(PCSX2_FLAGS INTERFACE
 	Zstd::Zstd
 	demanglegnu
 	ccc
-	plutovg::plutovg
-	plutosvg::plutosvg
 	${LIBC_LIBRARIES}
 )
+
+if(NOT PCSX2_TRACE_ONLY)
+	target_link_libraries(PCSX2_FLAGS INTERFACE
+		imgui
+		plutovg::plutovg
+		plutosvg::plutosvg
+		SDL3::SDL3
+	)
+endif()
 
 if(WIN32)
 	target_link_libraries(PCSX2_FLAGS INTERFACE
@@ -1197,9 +1256,11 @@ if(WIN32)
 		OneCore.lib
 	)
 else()
-	target_link_libraries(PCSX2_FLAGS INTERFACE
-		PCAP::PCAP
-	)
+	if(NOT PCSX2_TRACE_ONLY)
+		target_link_libraries(PCSX2_FLAGS INTERFACE
+			PCAP::PCAP
+		)
+	endif()
 endif()
 
 # additonal include directories

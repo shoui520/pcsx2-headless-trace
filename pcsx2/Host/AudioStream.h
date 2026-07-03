@@ -144,8 +144,10 @@ private:
 	static std::unique_ptr<AudioStream> CreateCubebAudioStream(u32 sample_rate, const AudioStreamParameters& parameters,
 		const char* driver_name, const char* device_name, bool stretch_enabled, Error* error);
 
+#ifndef PCSX2_TRACE_ONLY
 	static std::unique_ptr<AudioStream> CreateSDLAudioStream(u32 sample_rate, const AudioStreamParameters& parameters,
 		bool stretch_enabled, Error* error);
+#endif
 
 	void AllocateBuffer();
 	void DestroyBuffer();

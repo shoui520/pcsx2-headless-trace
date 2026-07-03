@@ -116,8 +116,10 @@ std::unique_ptr<AudioStream> AudioStream::CreateStream(AudioBackend backend, u32
 		case AudioBackend::Cubeb:
 			return CreateCubebAudioStream(sample_rate, parameters, driver_name, device_name, stretch_enabled, error);
 
+#ifndef PCSX2_TRACE_ONLY
 		case AudioBackend::SDL:
 			return CreateSDLAudioStream(sample_rate, parameters, stretch_enabled, error);
+#endif
 
 		case AudioBackend::Null:
 			return CreateNullStream(sample_rate, parameters.buffer_ms);

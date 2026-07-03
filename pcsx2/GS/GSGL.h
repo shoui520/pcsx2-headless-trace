@@ -12,6 +12,10 @@
 //#define ENABLE_EXTRA_LOG // print extra log
 #endif
 
+#ifdef PCSX2_TRACE_ONLY
+#undef ENABLE_OGL_DEBUG
+#endif
+
 // Note: GL messages are present in common code, so in all renderers.
 
 #ifdef ENABLE_OGL_DEBUG

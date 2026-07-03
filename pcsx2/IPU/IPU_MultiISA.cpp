@@ -9,6 +9,7 @@
 // under the GPL license. However, they have been heavily rewritten for PCSX2 usage.
 // The original author's copyright statement is included above for completeness sake.
 
+#include "DebugTools/IpuTrace.h"
 #include "IPU/IPU.h"
 #include "IPU/IPUdma.h"
 #include "IPU/yuv2rgb.h"
@@ -2002,6 +2003,7 @@ __noinline void IPUWorker()
 	IPU_LOG("IPU Command finished");
 	ipuRegs.ctrl.BUSY = 0;
 	//ipu_cmd.current = 0xffffffff;
+	Pcsx2Trace::RecordIpuCommandComplete(ipu_cmd.current);
 	hwIntcIrq(INTC_IPU);
 }
 

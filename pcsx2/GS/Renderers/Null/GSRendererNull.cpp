@@ -7,9 +7,14 @@ GSRendererNull::GSRendererNull() = default;
 
 void GSRendererNull::VSync(u32 field, bool registers_written, bool idle_frame)
 {
+#ifdef PCSX2_TRACE_ONLY
+	m_draw_transfers.clear();
+	return;
+#else
 	GSRenderer::VSync(field, registers_written, idle_frame);
 
 	m_draw_transfers.clear();
+#endif
 }
 
 void GSRendererNull::Draw()

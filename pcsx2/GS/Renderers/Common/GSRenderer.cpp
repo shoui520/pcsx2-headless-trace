@@ -64,7 +64,7 @@ GSRenderer::~GSRenderer() = default;
 void GSRenderer::Reset(bool hardware_reset)
 {
 	// Clear the current display texture.
-	if (hardware_reset)
+	if (hardware_reset && g_gs_device)
 		g_gs_device->ClearCurrent();
 
 	GSState::Reset(hardware_reset);
@@ -630,10 +630,18 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 		}
 	}
 
-	const bool blank_frame = !Merge(field);
-
 	m_last_draw_n = s_n;
 	m_last_transfer_n = s_transfer_n;
+
+#ifdef PCSX2_TRACE_ONLY
+	if (!g_gs_device)
+	{
+		PerformanceMetrics::Update(registers_written, fb_sprite_frame, true);
+		return;
+	}
+#endif
+
+	const bool blank_frame = !Merge(field);
 
 	// Skip presentation when running uncapped while vsync is on.
 	if (skip_frame || g_gs_device->ShouldSkipPresentingFrame())

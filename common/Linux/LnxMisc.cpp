@@ -19,8 +19,10 @@
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(X11_API)
 #include <X11/Xlib.h>
 #include <X11/extensions/XInput2.h>
+#endif
 
 #include <cstdlib>
 #include <cstring>
@@ -226,6 +228,7 @@ bool Common::InhibitScreensaver(bool inhibit)
 
 void Common::SetMousePosition(int x, int y)
 {
+#if defined(X11_API)
 	Display* display = XOpenDisplay(nullptr);
 	if (!display)
 		return;
@@ -235,8 +238,10 @@ void Common::SetMousePosition(int x, int y)
 	XFlush(display);
 
 	XCloseDisplay(display);
+#endif
 }
 
+#if defined(X11_API)
 static std::function<void(int, int)> fnMouseMoveCb;
 static std::atomic<bool> trackingMouse = false;
 static std::thread mouseThread;
@@ -328,6 +333,16 @@ void Common::DetachMousePositionCb()
 		mouseThread.join();
 	}
 }
+#else
+bool Common::AttachMousePositionCb(std::function<void(int, int)> cb)
+{
+	return false;
+}
+
+void Common::DetachMousePositionCb()
+{
+}
+#endif
 
 bool Common::PlaySoundAsync(const char* path)
 {
