@@ -11,6 +11,7 @@
 #include "DebugTools/EeTrace.h"
 #include "DebugTools/GsTrace.h"
 #include "DebugTools/MemTrace.h"
+#include "DebugTools/IopTrace.h"
 #include "DebugTools/IpuTrace.h"
 #include "DebugTools/Spu2Trace.h"
 #include "DebugTools/VuTrace.h"
@@ -683,6 +684,7 @@ static void intExecute()
 					Pcsx2Trace::NotifyEeElfEntry(cpuRegs.pc);
 					Pcsx2Trace::NotifyMemElfEntry(cpuRegs.pc);
 					Pcsx2Trace::NotifyGsElfEntry(cpuRegs.pc);
+					Pcsx2Trace::NotifyIopElfEntry(cpuRegs.pc);
 					Pcsx2Trace::NotifyIpuElfEntry(cpuRegs.pc);
 					Pcsx2Trace::NotifySpu2ElfEntry(cpuRegs.pc);
 					Pcsx2Trace::NotifyVuElfEntry(cpuRegs.pc);

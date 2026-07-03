@@ -143,7 +143,7 @@ namespace
 			"  --vu-units LIST        VU units to trace: vu0,vu1,both/all or a numeric mask.\n"
 			"  --max-blocks N         Compatibility alias for --max-instructions.\n"
 			"  --trace-from boot      Start tracing immediately instead of at the ELF entry point.\n"
-			"  --trace-from entry     Start tracing at the ELF entry point (default).\n"
+			"  --trace-from entry     Start tracing at the ELF entry point (default for trace types that can wait).\n"
 			"  --iop-dump ADDR SIZE PATH\n"
 			"                         Dump a bounded IOP memory span after execution (max 1 MiB).\n"
 			"  --data-root DIR        Isolated PCSX2 data root (default: trace output directory/pcsx2-trace-data).\n",
@@ -958,6 +958,7 @@ namespace
 			trace_config.output_path = options.iop_output_path;
 			trace_config.max_records = options.max_iop_instructions;
 			trace_config.skip_records = options.iop_skip_records;
+			trace_config.wait_for_elf_entry = options.wait_for_elf_entry;
 			if (!Pcsx2Trace::StartIopTrace(trace_config, &error))
 			{
 				std::fprintf(stderr, "Failed to start IOP trace: %s\n", error.GetDescription().c_str());
