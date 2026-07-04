@@ -8,6 +8,7 @@
 #include "pcsx2/DebugTools/IopTrace.h"
 #include "pcsx2/DebugTools/IpuTrace.h"
 #include "pcsx2/DebugTools/MemTrace.h"
+#include "pcsx2/DebugTools/SifTrace.h"
 #include "pcsx2/DebugTools/Spu2Trace.h"
 #include "pcsx2/DebugTools/VifTrace.h"
 #include "pcsx2/DebugTools/VuTrace.h"
@@ -43,6 +44,7 @@ namespace
 		std::string mem_output_path;
 		std::string gs_output_path;
 		std::string ipu_output_path;
+		std::string sif_output_path;
 		std::string spu2_output_path;
 		std::string vif_output_path;
 		std::string vu_output_path;
@@ -56,6 +58,7 @@ namespace
 		u64 max_gs_instructions = DEFAULT_MAX_INSTRUCTIONS;
 		u64 max_gs_records = 0;
 		u64 max_ipu_records = 0;
+		u64 max_sif_records = 0;
 		u64 max_spu2_records = 0;
 		u64 max_vif_records = 0;
 		u64 max_vu_instructions = DEFAULT_MAX_INSTRUCTIONS;
@@ -65,6 +68,7 @@ namespace
 		u64 mem_skip_records = 0;
 		u64 gs_skip_records = 0;
 		u64 ipu_skip_records = 0;
+		u64 sif_skip_records = 0;
 		u64 spu2_skip_records = 0;
 		u64 vif_skip_records = 0;
 		u64 vu_skip_records = 0;
@@ -87,6 +91,7 @@ namespace
 		bool max_mem_records_overridden = false;
 		bool max_gs_records_overridden = false;
 		bool max_ipu_records_overridden = false;
+		bool max_sif_records_overridden = false;
 		bool max_spu2_records_overridden = false;
 		bool max_vu_records_overridden = false;
 	};
@@ -97,7 +102,7 @@ namespace
 	void PrintUsage(const char* program)
 	{
 		std::fprintf(stderr,
-			"usage: %s <bios-file-or-dir> [elf-or-disc] (--out trace.bin | --iop-out trace.bin | --mem-out trace.bin | --gs-out trace.bin | --ipu-out trace.bin | --spu2-out trace.bin | --vif-out trace.bin | --vu-out trace.bin) [options]\n"
+			"usage: %s <bios-file-or-dir> [elf-or-disc] (--out trace.bin | --iop-out trace.bin | --mem-out trace.bin | --gs-out trace.bin | --ipu-out trace.bin | --sif-out trace.bin | --spu2-out trace.bin | --vif-out trace.bin | --vu-out trace.bin) [options]\n"
 			"\n"
 			"options:\n"
 			"  --boot-bios           Boot the BIOS with no disc and no ELF fast-boot override.\n"
@@ -114,6 +119,7 @@ namespace
 			"                         With --ee-match-trace, sample MEM only when the EE trace writes a record.\n"
 			"  --gs-out trace.bin    Write decoded GS register/image transfer records.\n"
 			"  --ipu-out trace.bin   Write IPU command/output hash records.\n"
+			"  --sif-out trace.bin   Write SIF0/SIF1 FIFO data/tag transfer records.\n"
 			"  --spu2-out trace.bin  Write SPU2 48 kHz mixer output records.\n"
 			"  --vif-out trace.bin   Write VIF command and unpack effect records.\n"
 			"  --vu-out trace.bin    Write VU0/VU1 interpreter micro-step records.\n"
@@ -131,6 +137,7 @@ namespace
 			"  --max-gs-instructions N\n"
 			"                         Stop the GS trace after N EE pre-instruction hooks (default: --max-instructions).\n"
 			"  --max-ipu-records N    Optional cap on IPU records.\n"
+			"  --max-sif-records N    Optional cap on SIF transfer records.\n"
 			"  --max-spu2-records N   Optional cap on SPU2 records.\n"
 			"  --max-vif-records N    Optional cap on VIF command/unpack records.\n"
 			"  --max-vu-records N     Optional cap on VU records.\n"
@@ -141,6 +148,7 @@ namespace
 			"  --mem-skip-records N  Skip N MEM region hash records before writing.\n"
 			"  --gs-skip-records N   Skip N decoded GS records before writing.\n"
 			"  --ipu-skip-records N  Skip N IPU records before writing.\n"
+			"  --sif-skip-records N  Skip N SIF records before writing.\n"
 			"  --spu2-skip-records N Skip N SPU2 records before writing.\n"
 			"  --vif-skip-records N  Skip N VIF records before writing.\n"
 			"  --vu-skip-records N   Skip N VU records before writing.\n"
@@ -358,6 +366,15 @@ namespace
 				}
 				options->ipu_output_path = argv[i];
 			}
+			else if (arg == "--sif-out")
+			{
+				if (++i >= argc)
+				{
+					std::fprintf(stderr, "--sif-out requires a path.\n");
+					return false;
+				}
+				options->sif_output_path = argv[i];
+			}
 			else if (arg == "--spu2-out")
 			{
 				if (++i >= argc)
@@ -432,6 +449,8 @@ namespace
 					options->max_gs_instructions = options->max_instructions;
 				if (!options->max_ipu_records_overridden)
 					options->max_ipu_records = options->max_instructions;
+				if (!options->max_sif_records_overridden)
+					options->max_sif_records = options->max_instructions;
 				if (!options->max_vu_records_overridden)
 					options->max_vu_instructions = options->max_instructions;
 			}
@@ -493,6 +512,15 @@ namespace
 					return false;
 				}
 				options->max_ipu_records_overridden = true;
+			}
+			else if (arg == "--max-sif-records")
+			{
+				if (++i >= argc || !ParseU64(argv[i], &options->max_sif_records))
+				{
+					std::fprintf(stderr, "--max-sif-records requires an integer.\n");
+					return false;
+				}
+				options->max_sif_records_overridden = true;
 			}
 			else if (arg == "--max-gs-instructions")
 			{
@@ -565,6 +593,14 @@ namespace
 				if (++i >= argc || !ParseU64(argv[i], &options->ipu_skip_records))
 				{
 					std::fprintf(stderr, "--ipu-skip-records requires an integer.\n");
+					return false;
+				}
+			}
+			else if (arg == "--sif-skip-records")
+			{
+				if (++i >= argc || !ParseU64(argv[i], &options->sif_skip_records))
+				{
+					std::fprintf(stderr, "--sif-skip-records requires an integer.\n");
 					return false;
 				}
 			}
@@ -691,7 +727,8 @@ namespace
 		if (options->bios_path.empty() ||
 			(options->output_path.empty() && options->iop_output_path.empty() &&
 				options->mem_output_path.empty() && options->gs_output_path.empty() &&
-				options->ipu_output_path.empty() && options->spu2_output_path.empty() &&
+				options->ipu_output_path.empty() && options->sif_output_path.empty() &&
+				options->spu2_output_path.empty() &&
 				options->vif_output_path.empty() && options->vu_output_path.empty()) ||
 			(!options->boot_bios_only && options->elf_path.empty()))
 		{
@@ -965,6 +1002,7 @@ namespace
 		bool mem_trace_started = false;
 		bool gs_trace_started = false;
 		bool ipu_trace_started = false;
+		bool sif_trace_started = false;
 		bool spu2_trace_started = false;
 		bool vif_trace_started = false;
 		bool vu_trace_started = false;
@@ -1074,6 +1112,31 @@ namespace
 			}
 			ipu_trace_started = true;
 		}
+		if (!options.sif_output_path.empty())
+		{
+			Pcsx2Trace::SifTraceConfig trace_config;
+			trace_config.output_path = options.sif_output_path;
+			trace_config.max_records = options.max_sif_records;
+			trace_config.skip_records = options.sif_skip_records;
+			trace_config.wait_for_elf_entry = options.wait_for_elf_entry;
+			if (!Pcsx2Trace::StartSifTrace(trace_config, &error))
+			{
+				std::fprintf(stderr, "Failed to start SIF trace: %s\n", error.GetDescription().c_str());
+				if (ipu_trace_started)
+					Pcsx2Trace::StopIpuTrace();
+				if (gs_trace_started)
+					Pcsx2Trace::StopGsTrace();
+				if (mem_trace_started)
+					Pcsx2Trace::StopMemTrace();
+				if (iop_trace_started)
+					Pcsx2Trace::StopIopTrace();
+				if (ee_trace_started)
+					Pcsx2Trace::StopEeTrace();
+				VMManager::Internal::CPUThreadShutdown();
+				return 2;
+			}
+			sif_trace_started = true;
+		}
 		if (!options.spu2_output_path.empty())
 		{
 			Pcsx2Trace::Spu2TraceConfig trace_config;
@@ -1084,6 +1147,8 @@ namespace
 			if (!Pcsx2Trace::StartSpu2Trace(trace_config, &error))
 			{
 				std::fprintf(stderr, "Failed to start SPU2 trace: %s\n", error.GetDescription().c_str());
+				if (sif_trace_started)
+					Pcsx2Trace::StopSifTrace();
 				if (ipu_trace_started)
 					Pcsx2Trace::StopIpuTrace();
 				if (gs_trace_started)
@@ -1111,6 +1176,8 @@ namespace
 				std::fprintf(stderr, "Failed to start VIF trace: %s\n", error.GetDescription().c_str());
 				if (spu2_trace_started)
 					Pcsx2Trace::StopSpu2Trace();
+				if (sif_trace_started)
+					Pcsx2Trace::StopSifTrace();
 				if (ipu_trace_started)
 					Pcsx2Trace::StopIpuTrace();
 				if (gs_trace_started)
@@ -1142,6 +1209,8 @@ namespace
 					Pcsx2Trace::StopVifTrace();
 				if (spu2_trace_started)
 					Pcsx2Trace::StopSpu2Trace();
+				if (sif_trace_started)
+					Pcsx2Trace::StopSifTrace();
 				if (ipu_trace_started)
 					Pcsx2Trace::StopIpuTrace();
 				if (gs_trace_started)
@@ -1188,6 +1257,8 @@ namespace
 				Pcsx2Trace::StopVifTrace();
 			if (spu2_trace_started)
 				Pcsx2Trace::StopSpu2Trace();
+			if (sif_trace_started)
+				Pcsx2Trace::StopSifTrace();
 			if (ipu_trace_started)
 				Pcsx2Trace::StopIpuTrace();
 			if (gs_trace_started)
@@ -1220,6 +1291,9 @@ namespace
 		const u64 ipu_records = Pcsx2Trace::GetIpuTraceRecordsWritten();
 		const bool ipu_hit_limit = Pcsx2Trace::DidIpuTraceHitLimit();
 		const std::string ipu_trace_error = Pcsx2Trace::GetIpuTraceError();
+		const u64 sif_records = Pcsx2Trace::GetSifTraceRecordsWritten();
+		const bool sif_hit_limit = Pcsx2Trace::DidSifTraceHitLimit();
+		const std::string sif_trace_error = Pcsx2Trace::GetSifTraceError();
 		const u64 spu2_records = Pcsx2Trace::GetSpu2TraceRecordsWritten();
 		const bool spu2_hit_limit = Pcsx2Trace::DidSpu2TraceHitLimit();
 		const std::string spu2_trace_error = Pcsx2Trace::GetSpu2TraceError();
@@ -1235,6 +1309,8 @@ namespace
 			Pcsx2Trace::StopVifTrace();
 		if (spu2_trace_started)
 			Pcsx2Trace::StopSpu2Trace();
+		if (sif_trace_started)
+			Pcsx2Trace::StopSifTrace();
 		if (ipu_trace_started)
 			Pcsx2Trace::StopIpuTrace();
 		if (gs_trace_started)
@@ -1287,6 +1363,12 @@ namespace
 				static_cast<unsigned long long>(ipu_records), ipu_trace_error.c_str());
 			return 4;
 		}
+		if (!sif_trace_error.empty())
+		{
+			std::fprintf(stderr, "SIF trace failed after %llu records: %s\n",
+				static_cast<unsigned long long>(sif_records), sif_trace_error.c_str());
+			return 4;
+		}
 		if (!spu2_trace_error.empty())
 		{
 			std::fprintf(stderr, "SPU2 trace failed after %llu records: %s\n",
@@ -1336,6 +1418,12 @@ namespace
 				static_cast<unsigned long long>(ipu_records), options.ipu_output_path.c_str(),
 				ipu_hit_limit ? " (hit limit)" : "");
 		}
+		if (sif_trace_started)
+		{
+			std::fprintf(stdout, "wrote %llu SIF FIFO transfer records to %s%s\n",
+				static_cast<unsigned long long>(sif_records), options.sif_output_path.c_str(),
+				sif_hit_limit ? " (hit limit)" : "");
+		}
 		if (spu2_trace_started)
 		{
 			std::fprintf(stdout, "wrote %llu SPU2 mixer records to %s%s\n",
@@ -1362,7 +1450,7 @@ namespace
 				options.iop_dump_path.c_str());
 		}
 		return (ee_hit_limit || iop_hit_limit || mem_hit_limit || gs_hit_limit || ipu_hit_limit ||
-			spu2_hit_limit || vif_hit_limit || vu_hit_limit) ? 0 : 1;
+			sif_hit_limit || spu2_hit_limit || vif_hit_limit || vu_hit_limit) ? 0 : 1;
 	}
 } // namespace
 
