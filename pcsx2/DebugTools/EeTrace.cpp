@@ -147,7 +147,11 @@ namespace Pcsx2Trace
 
 		bool RecordsMatchBoundaryTarget(const EeTraceRecord& current, const EeTraceRecord& target)
 		{
-			if (current.pc != target.pc || current.opcode != target.opcode || current.sa != target.sa)
+			if (current.pc != target.pc || current.opcode != target.opcode)
+				return false;
+			if (s_config.match_pc_only)
+				return true;
+			if (current.sa != target.sa)
 				return false;
 
 			for (u32 i = 0; i < 32; i++)

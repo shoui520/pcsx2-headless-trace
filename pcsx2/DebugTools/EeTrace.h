@@ -20,6 +20,9 @@ namespace Pcsx2Trace
 		u64 max_instruction_records = 0;
 		u64 skip_records = 0;
 		bool match_ignore_timing_state = false;
+		// Scout-only subsequence matching. Repeated code can select a different
+		// architectural phase, so callers must not treat the result as a state oracle.
+		bool match_pc_only = false;
 		bool defer_match_limit_until_mem_trace = false;
 		bool wait_for_elf_entry = true;
 	};

@@ -81,6 +81,7 @@ namespace
 		u32 vu_unit_mask = Pcsx2Trace::VuTraceUnitMaskBoth;
 		bool wait_for_elf_entry = true;
 		bool ee_match_ignore_timing_state = false;
+		bool ee_match_pc_only = false;
 		bool mem_sample_ee_trace = false;
 		bool gs_state_snapshots = false;
 		bool gs_state_full_dumps = false;
@@ -140,6 +141,7 @@ namespace
 			"                         Write only EE records matching this trace, scanning up to --max-instructions.\n"
 			"  --ee-match-ignore-timing-state\n"
 			"                         Ignore timing-derived EE state while matching --ee-match-trace.\n"
+			"  --ee-match-pc-only     Scout a PC/opcode subsequence only; this is not a state oracle.\n"
 			"  --iop-out trace.bin   Write an IOP/R3000A pre-instruction trace.\n"
 			"  --mem-out trace.bin   Write a guest-memory hash trace from the EE pre-instruction hook.\n"
 			"  --mem-sample-ee-trace\n"
@@ -353,6 +355,10 @@ namespace
 			else if (arg == "--ee-match-ignore-timing-state")
 			{
 				options->ee_match_ignore_timing_state = true;
+			}
+			else if (arg == "--ee-match-pc-only")
+			{
+				options->ee_match_pc_only = true;
 			}
 			else if (arg == "--iop-out")
 			{
@@ -779,6 +785,11 @@ namespace
 			std::fprintf(stderr, "--ee-match-trace requires --out.\n");
 			return false;
 		}
+		if (options->ee_match_pc_only && options->ee_match_trace_path.empty())
+		{
+			std::fprintf(stderr, "--ee-match-pc-only requires --ee-match-trace.\n");
+			return false;
+		}
 
 		if (options->mem_sample_ee_trace &&
 			(options->ee_match_trace_path.empty() || options->output_path.empty() || options->mem_output_path.empty()))
@@ -1050,6 +1061,7 @@ namespace
 			trace_config.max_instruction_records = options.ee_match_trace_path.empty() ? 0 : options.max_instructions;
 			trace_config.skip_records = options.ee_skip_records;
 			trace_config.match_ignore_timing_state = options.ee_match_ignore_timing_state;
+			trace_config.match_pc_only = options.ee_match_pc_only;
 			trace_config.defer_match_limit_until_mem_trace = options.mem_sample_ee_trace && !options.mem_output_path.empty();
 			trace_config.wait_for_elf_entry = options.wait_for_elf_entry;
 			if (!Pcsx2Trace::StartEeTrace(trace_config, &error))
