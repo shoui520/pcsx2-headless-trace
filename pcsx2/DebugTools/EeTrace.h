@@ -11,6 +11,7 @@ class Error;
 
 namespace Pcsx2Trace
 {
+	using EePreInstructionCallback = void (*)();
 	struct EeTraceConfig
 	{
 		std::string output_path;
@@ -27,6 +28,7 @@ namespace Pcsx2Trace
 	void StopEeTrace();
 
 	bool IsEeTraceEnabled();
+	void SetEePreInstructionCallback(EePreInstructionCallback callback);
 	bool RecordEePreInstruction(u32 pc, u32 opcode);
 	void NotifyEeElfEntry(u32 pc);
 	bool DidEeTraceRecordLastInstruction();

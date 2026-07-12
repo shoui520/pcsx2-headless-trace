@@ -14,7 +14,9 @@
 #include "pcsx2/DebugTools/VuTrace.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/IopMem.h"
+#include "pcsx2/R5900.h"
 #include "pcsx2/SIO/Pad/Pad.h"
+#include "pcsx2/SIO/Pad/PadDualshock2.h"
 #include "pcsx2/VMManager.h"
 
 #include "common/Error.h"
@@ -94,10 +96,35 @@ namespace
 		bool max_sif_records_overridden = false;
 		bool max_spu2_records_overridden = false;
 		bool max_vu_records_overridden = false;
+		bool pad_pulse_script = false;
 	};
 
 	std::unique_ptr<MemorySettingsInterface> s_base_settings;
 	std::unique_ptr<MemorySettingsInterface> s_secrets_settings;
+	u64 s_pad_script_entry_cycle = 0;
+	u32 s_pad_script_state = 0;
+
+	void UpdatePadPulseScript()
+	{
+		if (!VMManager::Internal::HasBootedELF())
+			return;
+		if (s_pad_script_entry_cycle == 0)
+			s_pad_script_entry_cycle = cpuRegs.cycle;
+
+		static constexpr u64 EE_CYCLES_PER_SECOND = 294912000;
+		static constexpr u64 PERIOD = EE_CYCLES_PER_SECOND * 2;
+		static constexpr u64 PULSE = EE_CYCLES_PER_SECOND / 5;
+		const u64 elapsed = cpuRegs.cycle - s_pad_script_entry_cycle;
+		const u64 event = elapsed / PERIOD;
+		const bool pressed = (elapsed % PERIOD) < PULSE;
+		const u32 state = pressed ? ((event & 1) ? 2u : 1u) : 0u;
+		if (state == s_pad_script_state)
+			return;
+
+		s_pad_script_state = state;
+		Pad::SetControllerState(0, PadDualshock2::Inputs::PAD_START, state == 1 ? 1.0f : 0.0f);
+		Pad::SetControllerState(0, PadDualshock2::Inputs::PAD_CROSS, state == 2 ? 1.0f : 0.0f);
+	}
 
 	void PrintUsage(const char* program)
 	{
@@ -123,6 +150,7 @@ namespace
 			"  --spu2-out trace.bin  Write SPU2 48 kHz mixer output records.\n"
 			"  --vif-out trace.bin   Write VIF command and unpack effect records.\n"
 			"  --vu-out trace.bin    Write VU0/VU1 interpreter micro-step records.\n"
+			"  --pad-pulse-script    Alternate deterministic EE-cycle START/CROSS pulses after ELF entry.\n"
 			"  --gs-state-snapshots  Include full GSState/local-memory hash sections in the GS trace.\n"
 			"  --gs-state-full       With --gs-state-snapshots, write raw leaf GS state bytes to trace.bin.state.bin.\n"
 			"  --gs-debug-dump-dir DIR\n"
@@ -401,6 +429,10 @@ namespace
 					return false;
 				}
 				options->vu_output_path = argv[i];
+			}
+			else if (arg == "--pad-pulse-script")
+			{
+				options->pad_pulse_script = true;
 			}
 			else if (arg == "--gs-state-snapshots")
 			{
@@ -866,11 +898,14 @@ namespace
 
 		si.ClearSection("Hotkeys");
 		const Pad::ControllerInfo* disconnected_pad_info = Pad::GetControllerInfo(Pad::ControllerType::NotConnected);
+		const Pad::ControllerInfo* ds2_pad_info = Pad::GetControllerInfo(Pad::ControllerType::DualShock2);
 		const char* disconnected_pad_type = disconnected_pad_info ? disconnected_pad_info->name : "None";
+		const char* ds2_pad_type = ds2_pad_info ? ds2_pad_info->name : "DualShock2";
 		for (u32 i = 0; i < Pad::NUM_CONTROLLER_PORTS; i++)
 		{
 			const std::string section = Pad::GetConfigSection(i);
-			si.SetStringValue(section.c_str(), "Type", disconnected_pad_type);
+			si.SetStringValue(section.c_str(), "Type",
+				(options.pad_pulse_script && i == 0) ? ds2_pad_type : disconnected_pad_type);
 		}
 
 		SetInt(si, "EmuCore/Speedhacks", "EECycleRate", 0);
@@ -1274,7 +1309,10 @@ namespace
 		}
 
 		VMManager::SetState(VMState::Running);
+		if (options.pad_pulse_script)
+			Pcsx2Trace::SetEePreInstructionCallback(UpdatePadPulseScript);
 		VMManager::Execute();
+		Pcsx2Trace::SetEePreInstructionCallback(nullptr);
 
 		const u64 ee_records = Pcsx2Trace::GetEeTraceRecordsWritten();
 		const bool ee_hit_limit = Pcsx2Trace::DidEeTraceHitLimit();
@@ -1301,6 +1339,7 @@ namespace
 		const bool vif_hit_limit = Pcsx2Trace::DidVifTraceHitLimit();
 		const std::string vif_trace_error = Pcsx2Trace::GetVifTraceError();
 		const u64 vu_records = Pcsx2Trace::GetVuTraceRecordsWritten();
+		const u64 vu_instructions_seen = Pcsx2Trace::GetVuTraceInstructionRecordsSeen();
 		const bool vu_hit_limit = Pcsx2Trace::DidVuTraceHitLimit();
 		const std::string vu_trace_error = Pcsx2Trace::GetVuTraceError();
 		if (vu_trace_started)
@@ -1438,8 +1477,9 @@ namespace
 		}
 		if (vu_trace_started)
 		{
-			std::fprintf(stdout, "wrote %llu VU interpreter records to %s%s\n",
-				static_cast<unsigned long long>(vu_records), options.vu_output_path.c_str(),
+			std::fprintf(stdout, "wrote %llu VU interpreter records after %llu EE instructions to %s%s\n",
+				static_cast<unsigned long long>(vu_records),
+				static_cast<unsigned long long>(vu_instructions_seen), options.vu_output_path.c_str(),
 				vu_hit_limit ? " (hit limit)" : "");
 		}
 		if (!options.iop_dump_path.empty())

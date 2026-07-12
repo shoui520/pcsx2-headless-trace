@@ -19,6 +19,7 @@ namespace Pcsx2Trace
 {
 	namespace
 	{
+		EePreInstructionCallback s_pre_instruction_callback = nullptr;
 		static constexpr std::array<char, 8> TRACE_MAGIC = {'P', 'C', 'S', 'X', '2', 'E', 'E', 'T'};
 		static constexpr u32 TRACE_VERSION = 1;
 		static constexpr u32 TRACE_FLAG_WAITED_FOR_ELF_ENTRY = 1u << 0;
@@ -307,8 +308,15 @@ namespace Pcsx2Trace
 		return (s_trace_file && s_started);
 	}
 
+	void SetEePreInstructionCallback(EePreInstructionCallback callback)
+	{
+		s_pre_instruction_callback = callback;
+	}
+
 	bool RecordEePreInstruction(u32 pc, u32 opcode)
 	{
+		if (s_pre_instruction_callback)
+			s_pre_instruction_callback();
 		s_last_instruction_recorded = false;
 		if (!IsEeTraceEnabled())
 			return false;

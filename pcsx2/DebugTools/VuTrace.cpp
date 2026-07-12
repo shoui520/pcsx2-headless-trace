@@ -289,6 +289,11 @@ namespace Pcsx2Trace
 		return s_records_written;
 	}
 
+	u64 GetVuTraceInstructionRecordsSeen()
+	{
+		return s_instruction_records_seen;
+	}
+
 	bool DidVuTraceHitLimit()
 	{
 		return s_hit_limit;
