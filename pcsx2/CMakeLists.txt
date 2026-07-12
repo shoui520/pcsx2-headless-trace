@@ -821,6 +821,7 @@ endif()
 
 # DebugTools sources
 set(pcsx2DebugToolsSources
+	DebugTools/CoreEventTrace.cpp
 	DebugTools/DebugInterface.cpp
 	DebugTools/DisassemblyManager.cpp
 	DebugTools/EeTrace.cpp
@@ -848,6 +849,7 @@ set(pcsx2DebugToolsSources
 
 # DebugTools headers
 set(pcsx2DebugToolsHeaders
+	DebugTools/CoreEventTrace.h
 	DebugTools/DebugInterface.h
 	DebugTools/DisassemblyManager.h
 	DebugTools/EeTrace.h

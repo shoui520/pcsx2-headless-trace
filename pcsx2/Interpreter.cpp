@@ -8,6 +8,7 @@
 #include "Cache.h"
 
 #include "DebugTools/Breakpoints.h"
+#include "DebugTools/CoreEventTrace.h"
 #include "DebugTools/EeTrace.h"
 #include "DebugTools/GsTrace.h"
 #include "DebugTools/MemTrace.h"
@@ -683,6 +684,7 @@ static void intExecute()
 				}
 				else if (cpuRegs.pc == elf_entry_point)
 				{
+					Pcsx2Trace::NotifyCoreEventElfEntry(cpuRegs.pc);
 					Pcsx2Trace::NotifyEeElfEntry(cpuRegs.pc);
 					Pcsx2Trace::NotifyMemElfEntry(cpuRegs.pc);
 					Pcsx2Trace::NotifyGsElfEntry(cpuRegs.pc);

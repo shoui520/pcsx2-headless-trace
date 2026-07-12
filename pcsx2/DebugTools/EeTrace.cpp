@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "DebugTools/EeTrace.h"
+
+#include "DebugTools/SifTrace.h"
 #include "R5900.h"
 
 #include "common/Error.h"
@@ -324,6 +326,11 @@ namespace Pcsx2Trace
 		s_last_instruction_recorded = false;
 		if (!IsEeTraceEnabled())
 			return false;
+		if (s_config.after_sif_records != 0 &&
+			GetSifTraceRecordsWritten() < s_config.after_sif_records)
+		{
+			return false;
+		}
 
 		if (s_config.max_instruction_records != 0 &&
 			s_instruction_records_seen >= s_config.max_instruction_records)
