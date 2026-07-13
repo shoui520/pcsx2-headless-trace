@@ -3,6 +3,7 @@
 
 #include "Common.h"
 
+#include "DebugTools/MachineCheckpointTrace.h"
 #include "VUmicro.h"
 #include "DebugTools/VuTrace.h"
 #include "GS.h"
@@ -284,4 +285,5 @@ void InterpVU1::Execute(u32 cycles)
 	}
 	VU1.VI[REG_TPC].UL >>= 3;
 	VU1.nextBlockCycles = (VU1.cycle - cpuRegs.cycle) + 1;
+	Pcsx2Trace::NotifyMachineCheckpointVu1ExecutionCompleted();
 }

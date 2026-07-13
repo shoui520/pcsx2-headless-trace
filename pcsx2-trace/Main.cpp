@@ -8,6 +8,7 @@
 #include "pcsx2/DebugTools/GsTrace.h"
 #include "pcsx2/DebugTools/IopTrace.h"
 #include "pcsx2/DebugTools/IpuTrace.h"
+#include "pcsx2/DebugTools/MachineCheckpointTrace.h"
 #include "pcsx2/DebugTools/MemTrace.h"
 #include "pcsx2/DebugTools/SifTrace.h"
 #include "pcsx2/DebugTools/Spu2Trace.h"
@@ -47,6 +48,8 @@ namespace
 		std::string mem_output_path;
 		std::string gs_output_path;
 		std::string ipu_output_path;
+		std::string machine_checkpoint_output_path;
+		std::string machine_checkpoint_diagnostic_directory;
 		std::string sif_output_path;
 		std::string core_event_output_path;
 		std::string spu2_output_path;
@@ -62,6 +65,7 @@ namespace
 		u64 max_gs_instructions = DEFAULT_MAX_INSTRUCTIONS;
 		u64 max_gs_records = 0;
 		u64 max_ipu_records = 0;
+		u64 max_machine_checkpoint_records = 1;
 		u64 max_sif_records = 0;
 		u64 max_core_event_records = 0;
 		u64 max_spu2_records = 0;
@@ -73,6 +77,9 @@ namespace
 		u64 mem_skip_records = 0;
 		u64 gs_skip_records = 0;
 		u64 ipu_skip_records = 0;
+		u64 machine_checkpoint_skip_records = 0;
+		u64 machine_checkpoint_after_sif_records = 0;
+		u64 machine_checkpoint_after_vif_records = 0;
 		u64 sif_skip_records = 0;
 		u64 core_event_skip_records = 0;
 		u64 core_event_after_sif_records = 0;
@@ -105,6 +112,10 @@ namespace
 		bool max_spu2_records_overridden = false;
 		bool max_vu_records_overridden = false;
 		bool pad_pulse_script = false;
+		bool recompiler_ee = false;
+		bool recompiler_iop = false;
+		bool recompiler_vu = false;
+		bool stop_after_sif_limit = false;
 	};
 
 	std::unique_ptr<MemorySettingsInterface> s_base_settings;
@@ -112,13 +123,24 @@ namespace
 	u64 s_pad_script_entry_cycle = 0;
 	u32 s_pad_script_state = 0;
 	bool s_pad_pulse_script_enabled = false;
+	bool s_stop_after_sif_limit = false;
+	bool s_machine_checkpoint_trace_enabled = false;
 
 	void UpdatePadPulseScript()
 	{
-		// Core-event records are emitted at scheduler/device seams rather than at
-		// the EE trace hook.  Leave the interpreter at the next architectural
-		// instruction boundary once that independent capture reaches its cap.
-		if (Pcsx2Trace::DidCoreEventTraceHitLimit())
+		// A requested machine checkpoint is the stronger terminal condition. Its
+		// completed-VU seam can occur after bounded CORE/SIF diagnostics fill, so
+		// preserve execution until the checkpoint itself is recorded.
+		if (s_machine_checkpoint_trace_enabled)
+		{
+			if (Pcsx2Trace::DidMachineCheckpointTraceHitLimit())
+			{
+				Cpu->ExitExecution();
+				return;
+			}
+		}
+		else if (Pcsx2Trace::DidCoreEventTraceHitLimit() ||
+			(s_stop_after_sif_limit && Pcsx2Trace::DidSifTraceHitLimit()))
 		{
 			Cpu->ExitExecution();
 			return;
@@ -147,7 +169,7 @@ namespace
 	void PrintUsage(const char* program)
 	{
 		std::fprintf(stderr,
-			"usage: %s <bios-file-or-dir> [elf-or-disc] (--out trace.bin | --iop-out trace.bin | --mem-out trace.bin | --gs-out trace.bin | --ipu-out trace.bin | --sif-out trace.bin | --core-event-out trace.bin | --spu2-out trace.bin | --vif-out trace.bin | --vu-out trace.bin) [options]\n"
+			"usage: %s <bios-file-or-dir> [elf-or-disc] (--out trace.bin | --iop-out trace.bin | --mem-out trace.bin | --gs-out trace.bin | --ipu-out trace.bin | --machine-checkpoint-out trace.bin | --sif-out trace.bin | --core-event-out trace.bin | --spu2-out trace.bin | --vif-out trace.bin | --vu-out trace.bin) [options]\n"
 			"\n"
 			"options:\n"
 			"  --boot-bios           Boot the BIOS with no disc and no ELF fast-boot override.\n"
@@ -165,6 +187,10 @@ namespace
 			"                         With --ee-match-trace, sample MEM only when the EE trace writes a record.\n"
 			"  --gs-out trace.bin    Write decoded GS register/image transfer records.\n"
 			"  --ipu-out trace.bin   Write IPU command/output hash records.\n"
+			"  --machine-checkpoint-out trace.bin\n"
+			"                         Write quiescent whole-machine checkpoints after VU1 completion.\n"
+			"  --machine-checkpoint-diagnostic-dir DIR\n"
+			"                         Write bounded raw EE/IOP RAM and projection-detail checkpoint diagnostics.\n"
 			"  --sif-out trace.bin   Write SIF0/SIF1 FIFO data/tag transfer records.\n"
 			"  --core-event-out trace.bin\n"
 			"                         Write EE/IOP scheduler and device-event records.\n"
@@ -172,6 +198,11 @@ namespace
 			"  --vif-out trace.bin   Write VIF command and unpack effect records.\n"
 			"  --vu-out trace.bin    Write VU0/VU1 interpreter micro-step records.\n"
 			"  --pad-pulse-script    Alternate deterministic EE-cycle START/CROSS pulses after ELF entry.\n"
+			"  --recompiler-ee       Run the native EE recompiler (CORE/SIF traces do not require EE instruction hooks).\n"
+			"  --recompiler-iop      Run the native IOP recompiler.\n"
+			"  --recompiler-vu       Run the native microVU0 and microVU1 recompilers with MTVU disabled.\n"
+			"  --stop-after-sif-limit\n"
+			"                         Stop safely after the scheduler containing the final bounded SIF record.\n"
 			"  --gs-state-snapshots  Include full GSState/local-memory hash sections in the GS trace.\n"
 			"  --gs-state-full       With --gs-state-snapshots, write raw leaf GS state bytes to trace.bin.state.bin.\n"
 			"  --gs-debug-dump-dir DIR\n"
@@ -186,6 +217,8 @@ namespace
 			"  --max-gs-instructions N\n"
 			"                         Stop the GS trace after N EE pre-instruction hooks (default: --max-instructions).\n"
 			"  --max-ipu-records N    Optional cap on IPU records.\n"
+			"  --machine-checkpoint-max N\n"
+			"                         Stop after N machine checkpoints (default: 1; zero is unlimited).\n"
 			"  --max-sif-records N    Optional cap on SIF transfer records.\n"
 			"  --max-core-event-records N\n"
 			"                         Optional cap on core-event records.\n"
@@ -201,6 +234,12 @@ namespace
 			"  --mem-skip-records N  Skip N MEM region hash records before writing.\n"
 			"  --gs-skip-records N   Skip N decoded GS records before writing.\n"
 			"  --ipu-skip-records N  Skip N IPU records before writing.\n"
+			"  --machine-checkpoint-skip N\n"
+			"                         Skip N eligible VU1 completions before checkpointing.\n"
+			"  --machine-checkpoint-after-sif N\n"
+			"                         Gate checkpoints until N observed SIF records.\n"
+			"  --machine-checkpoint-after-vif N\n"
+			"                         Gate checkpoints until N observed VIF records.\n"
 			"  --sif-skip-records N  Skip N SIF records before writing.\n"
 			"  --core-event-skip-records N\n"
 			"                         Skip N core-event records before writing.\n"
@@ -427,6 +466,24 @@ namespace
 				}
 				options->ipu_output_path = argv[i];
 			}
+			else if (arg == "--machine-checkpoint-out")
+			{
+				if (++i >= argc)
+				{
+					std::fprintf(stderr, "--machine-checkpoint-out requires a path.\n");
+					return false;
+				}
+				options->machine_checkpoint_output_path = argv[i];
+			}
+			else if (arg == "--machine-checkpoint-diagnostic-dir")
+			{
+				if (++i >= argc)
+				{
+					std::fprintf(stderr, "--machine-checkpoint-diagnostic-dir requires a path.\n");
+					return false;
+				}
+				options->machine_checkpoint_diagnostic_directory = argv[i];
+			}
 			else if (arg == "--sif-out")
 			{
 				if (++i >= argc)
@@ -475,6 +532,22 @@ namespace
 			else if (arg == "--pad-pulse-script")
 			{
 				options->pad_pulse_script = true;
+			}
+			else if (arg == "--recompiler-ee")
+			{
+				options->recompiler_ee = true;
+			}
+			else if (arg == "--recompiler-iop")
+			{
+				options->recompiler_iop = true;
+			}
+			else if (arg == "--recompiler-vu")
+			{
+				options->recompiler_vu = true;
+			}
+			else if (arg == "--stop-after-sif-limit")
+			{
+				options->stop_after_sif_limit = true;
 			}
 			else if (arg == "--gs-state-snapshots")
 			{
@@ -589,6 +662,14 @@ namespace
 				}
 				options->max_ipu_records_overridden = true;
 			}
+			else if (arg == "--machine-checkpoint-max")
+			{
+				if (++i >= argc || !ParseU64(argv[i], &options->max_machine_checkpoint_records))
+				{
+					std::fprintf(stderr, "--machine-checkpoint-max requires an integer.\n");
+					return false;
+				}
+			}
 			else if (arg == "--max-sif-records")
 			{
 				if (++i >= argc || !ParseU64(argv[i], &options->max_sif_records))
@@ -678,6 +759,30 @@ namespace
 				if (++i >= argc || !ParseU64(argv[i], &options->ipu_skip_records))
 				{
 					std::fprintf(stderr, "--ipu-skip-records requires an integer.\n");
+					return false;
+				}
+			}
+			else if (arg == "--machine-checkpoint-skip")
+			{
+				if (++i >= argc || !ParseU64(argv[i], &options->machine_checkpoint_skip_records))
+				{
+					std::fprintf(stderr, "--machine-checkpoint-skip requires an integer.\n");
+					return false;
+				}
+			}
+			else if (arg == "--machine-checkpoint-after-sif")
+			{
+				if (++i >= argc || !ParseU64(argv[i], &options->machine_checkpoint_after_sif_records))
+				{
+					std::fprintf(stderr, "--machine-checkpoint-after-sif requires an integer.\n");
+					return false;
+				}
+			}
+			else if (arg == "--machine-checkpoint-after-vif")
+			{
+				if (++i >= argc || !ParseU64(argv[i], &options->machine_checkpoint_after_vif_records))
+				{
+					std::fprintf(stderr, "--machine-checkpoint-after-vif requires an integer.\n");
 					return false;
 				}
 			}
@@ -836,7 +941,8 @@ namespace
 		if (options->bios_path.empty() ||
 			(options->output_path.empty() && options->iop_output_path.empty() &&
 				options->mem_output_path.empty() && options->gs_output_path.empty() &&
-				options->ipu_output_path.empty() && options->sif_output_path.empty() &&
+				options->ipu_output_path.empty() && options->machine_checkpoint_output_path.empty() &&
+				options->sif_output_path.empty() &&
 				options->core_event_output_path.empty() &&
 				options->spu2_output_path.empty() &&
 				options->vif_output_path.empty() && options->vu_output_path.empty()) ||
@@ -869,10 +975,89 @@ namespace
 			std::fprintf(stderr, "--mem-sample-ee-trace requires --ee-match-trace, --out, and --mem-out.\n");
 			return false;
 		}
+		if (options->recompiler_ee &&
+			(!options->output_path.empty() || !options->ee_match_trace_path.empty() ||
+			 !options->mem_output_path.empty() || options->mem_sample_ee_trace ||
+			 options->ee_after_sif_records != 0))
+		{
+			std::fprintf(stderr,
+				"--recompiler-ee is incompatible with EE pre-instruction trace modes; use CORE/SIF or other backend-neutral traces.\n");
+			return false;
+		}
+		if (options->recompiler_vu && !options->vu_output_path.empty())
+		{
+			std::fprintf(stderr,
+				"--recompiler-vu is incompatible with the interpreter micro-step VU trace.\n");
+			return false;
+		}
+		if (options->recompiler_iop && !options->iop_output_path.empty())
+		{
+			std::fprintf(stderr,
+				"--recompiler-iop is incompatible with the IOP pre-instruction trace.\n");
+			return false;
+		}
+
+		if (options->machine_checkpoint_after_sif_records != 0 && options->sif_output_path.empty())
+		{
+			std::fprintf(stderr, "--machine-checkpoint-after-sif requires --sif-out.\n");
+			return false;
+		}
+		if (!options->machine_checkpoint_diagnostic_directory.empty() &&
+			options->machine_checkpoint_output_path.empty())
+		{
+			std::fprintf(stderr,
+				"--machine-checkpoint-diagnostic-dir requires --machine-checkpoint-out.\n");
+			return false;
+		}
+		if (!options->machine_checkpoint_diagnostic_directory.empty() &&
+			options->max_machine_checkpoint_records == 0)
+		{
+			std::fprintf(stderr,
+				"--machine-checkpoint-diagnostic-dir requires nonzero --machine-checkpoint-max.\n");
+			return false;
+		}
+		if (options->machine_checkpoint_after_vif_records != 0 && options->vif_output_path.empty())
+		{
+			std::fprintf(stderr, "--machine-checkpoint-after-vif requires --vif-out.\n");
+			return false;
+		}
+		if (options->machine_checkpoint_after_sif_records != 0 && options->sif_skip_records != 0)
+		{
+			std::fprintf(stderr,
+				"--machine-checkpoint-after-sif requires --sif-skip-records 0.\n");
+			return false;
+		}
+		if (options->machine_checkpoint_after_vif_records != 0 && options->vif_skip_records != 0)
+		{
+			std::fprintf(stderr,
+				"--machine-checkpoint-after-vif requires --vif-skip-records 0.\n");
+			return false;
+		}
+		if (options->machine_checkpoint_after_sif_records != 0 && options->max_sif_records != 0 &&
+			options->max_sif_records < options->machine_checkpoint_after_sif_records)
+		{
+			std::fprintf(stderr,
+				"--max-sif-records must be zero or reach --machine-checkpoint-after-sif.\n");
+			return false;
+		}
+		if (options->machine_checkpoint_after_vif_records != 0 && options->max_vif_records != 0 &&
+			options->max_vif_records < options->machine_checkpoint_after_vif_records)
+		{
+			std::fprintf(stderr,
+				"--max-vif-records must be zero or reach --machine-checkpoint-after-vif.\n");
+			return false;
+		}
 
 		if (options->core_event_after_sif_records != 0 && options->sif_output_path.empty())
 		{
 			std::fprintf(stderr, "--core-event-after-sif-records requires --sif-out.\n");
+			return false;
+		}
+		if (options->stop_after_sif_limit &&
+			(options->sif_output_path.empty() || options->max_sif_records == 0))
+		{
+			std::fprintf(stderr,
+				"--stop-after-sif-limit requires --sif-out and a nonzero --max-sif-records.\n");
 			return false;
 		}
 		if (options->core_event_after_sif_records != 0 && options->core_event_output_path.empty())
@@ -1009,10 +1194,10 @@ namespace
 			SetInt(si, "EmuCore/GS", "SaveFrameBy", 1);
 		}
 
-		SetBool(si, "EmuCore/CPU/Recompiler", "EnableEE", false);
-		SetBool(si, "EmuCore/CPU/Recompiler", "EnableIOP", false);
-		SetBool(si, "EmuCore/CPU/Recompiler", "EnableVU0", false);
-		SetBool(si, "EmuCore/CPU/Recompiler", "EnableVU1", false);
+		SetBool(si, "EmuCore/CPU/Recompiler", "EnableEE", options.recompiler_ee);
+		SetBool(si, "EmuCore/CPU/Recompiler", "EnableIOP", options.recompiler_iop);
+		SetBool(si, "EmuCore/CPU/Recompiler", "EnableVU0", options.recompiler_vu);
+		SetBool(si, "EmuCore/CPU/Recompiler", "EnableVU1", options.recompiler_vu);
 		SetBool(si, "EmuCore/CPU/Recompiler", "EnableFastmem", false);
 		SetBool(si, "EmuCore/CPU/Recompiler", "EnableEECache", false);
 
@@ -1061,6 +1246,8 @@ namespace
 			output_path_for_defaults = options.gs_output_path;
 		if (output_path_for_defaults.empty())
 			output_path_for_defaults = options.ipu_output_path;
+		if (output_path_for_defaults.empty())
+			output_path_for_defaults = options.machine_checkpoint_output_path;
 		if (output_path_for_defaults.empty())
 			output_path_for_defaults = options.core_event_output_path;
 		if (output_path_for_defaults.empty())
@@ -1159,6 +1346,7 @@ namespace
 		bool mem_trace_started = false;
 		bool gs_trace_started = false;
 		bool ipu_trace_started = false;
+		bool machine_checkpoint_trace_started = false;
 		bool sif_trace_started = false;
 		bool core_event_trace_started = false;
 		bool spu2_trace_started = false;
@@ -1304,6 +1492,14 @@ namespace
 			trace_config.max_records = options.max_core_event_records;
 			trace_config.skip_records = options.core_event_skip_records;
 			trace_config.after_sif_records = options.core_event_after_sif_records;
+			trace_config.execution_provider_mask =
+				(options.recompiler_ee ?
+					static_cast<u32>(Pcsx2Trace::CoreEventTraceExecutionEeRecompiler) : 0u) |
+				(options.recompiler_iop ?
+					static_cast<u32>(Pcsx2Trace::CoreEventTraceExecutionIopRecompiler) : 0u) |
+				(options.recompiler_vu ?
+					static_cast<u32>(Pcsx2Trace::CoreEventTraceExecutionVu0Recompiler |
+						Pcsx2Trace::CoreEventTraceExecutionVu1Recompiler) : 0u);
 			trace_config.wait_for_elf_entry = options.wait_for_elf_entry;
 			if (!Pcsx2Trace::StartCoreEventTrace(trace_config, &error))
 			{
@@ -1420,6 +1616,46 @@ namespace
 			}
 			vu_trace_started = true;
 		}
+		if (!options.machine_checkpoint_output_path.empty())
+		{
+			Pcsx2Trace::MachineCheckpointTraceConfig trace_config;
+			trace_config.output_path = options.machine_checkpoint_output_path;
+			trace_config.diagnostic_dump_directory =
+				options.machine_checkpoint_diagnostic_directory;
+			trace_config.max_records = options.max_machine_checkpoint_records;
+			trace_config.skip_records = options.machine_checkpoint_skip_records;
+			trace_config.after_sif_records = options.machine_checkpoint_after_sif_records;
+			trace_config.after_vif_records = options.machine_checkpoint_after_vif_records;
+			trace_config.wait_for_elf_entry = options.wait_for_elf_entry;
+			if (!Pcsx2Trace::StartMachineCheckpointTrace(trace_config, &error))
+			{
+				std::fprintf(stderr, "Failed to start machine checkpoint trace: %s\n",
+					error.GetDescription().c_str());
+				if (vu_trace_started)
+					Pcsx2Trace::StopVuTrace();
+				if (vif_trace_started)
+					Pcsx2Trace::StopVifTrace();
+				if (spu2_trace_started)
+					Pcsx2Trace::StopSpu2Trace();
+				if (core_event_trace_started)
+					Pcsx2Trace::StopCoreEventTrace();
+				if (sif_trace_started)
+					Pcsx2Trace::StopSifTrace();
+				if (ipu_trace_started)
+					Pcsx2Trace::StopIpuTrace();
+				if (gs_trace_started)
+					Pcsx2Trace::StopGsTrace();
+				if (mem_trace_started)
+					Pcsx2Trace::StopMemTrace();
+				if (iop_trace_started)
+					Pcsx2Trace::StopIopTrace();
+				if (ee_trace_started)
+					Pcsx2Trace::StopEeTrace();
+				VMManager::Internal::CPUThreadShutdown();
+				return 2;
+			}
+			machine_checkpoint_trace_started = true;
+		}
 
 		VMBootParameters boot;
 		if (options.boot_disc)
@@ -1445,6 +1681,8 @@ namespace
 			std::fprintf(stderr, "Failed to boot %s: %s\n",
 				options.boot_bios_only ? "BIOS" : (options.boot_disc ? "disc" : "ELF"),
 				error.GetDescription().c_str());
+			if (machine_checkpoint_trace_started)
+				Pcsx2Trace::StopMachineCheckpointTrace();
 			if (vu_trace_started)
 				Pcsx2Trace::StopVuTrace();
 			if (vif_trace_started)
@@ -1471,10 +1709,45 @@ namespace
 
 		VMManager::SetState(VMState::Running);
 		s_pad_pulse_script_enabled = options.pad_pulse_script;
-		if (options.pad_pulse_script || core_event_trace_started)
-			Pcsx2Trace::SetEePreInstructionCallback(UpdatePadPulseScript);
-		VMManager::Execute();
-		Pcsx2Trace::SetEePreInstructionCallback(nullptr);
+		s_stop_after_sif_limit = options.stop_after_sif_limit;
+		s_machine_checkpoint_trace_enabled = machine_checkpoint_trace_started;
+		if (options.pad_pulse_script || core_event_trace_started ||
+			machine_checkpoint_trace_started || s_stop_after_sif_limit)
+			Pcsx2Trace::SetCoreEventSchedulerCallback(UpdatePadPulseScript);
+		const auto auxiliary_trace_failed = [&]() {
+			return
+				(ee_trace_started && !Pcsx2Trace::GetEeTraceError().empty()) ||
+				(iop_trace_started && !Pcsx2Trace::GetIopTraceError().empty()) ||
+				(mem_trace_started && !Pcsx2Trace::GetMemTraceError().empty()) ||
+				(gs_trace_started && !Pcsx2Trace::GetGsTraceError().empty()) ||
+				(ipu_trace_started && !Pcsx2Trace::GetIpuTraceError().empty()) ||
+				(sif_trace_started && !Pcsx2Trace::GetSifTraceError().empty()) ||
+				(core_event_trace_started && !Pcsx2Trace::GetCoreEventTraceError().empty()) ||
+				(spu2_trace_started && !Pcsx2Trace::GetSpu2TraceError().empty()) ||
+				(vif_trace_started && !Pcsx2Trace::GetVifTraceError().empty()) ||
+				(vu_trace_started && !Pcsx2Trace::GetVuTraceError().empty());
+		};
+		// PCSX2's CPU-thread owner calls Execute() again after a runtime provider
+		// switch. Fast boot applies the game configuration at ELF entry, so a
+		// recompiler-enabled trace must survive that first intentional return.
+		do
+		{
+			VMManager::Execute();
+		} while (VMManager::GetState() == VMState::Running && !auxiliary_trace_failed() &&
+			(machine_checkpoint_trace_started ?
+				!Pcsx2Trace::DidMachineCheckpointTraceHitLimit() :
+				(!(ee_trace_started && Pcsx2Trace::DidEeTraceHitLimit()) &&
+				 !(iop_trace_started && Pcsx2Trace::DidIopTraceHitLimit()) &&
+				 !(mem_trace_started && Pcsx2Trace::DidMemTraceHitLimit()) &&
+				 !(gs_trace_started && Pcsx2Trace::DidGsTraceHitLimit()) &&
+				 !(ipu_trace_started && Pcsx2Trace::DidIpuTraceHitLimit()) &&
+				 !(core_event_trace_started && Pcsx2Trace::DidCoreEventTraceHitLimit()) &&
+				 !(spu2_trace_started && Pcsx2Trace::DidSpu2TraceHitLimit()) &&
+				 !(vif_trace_started && Pcsx2Trace::DidVifTraceHitLimit()) &&
+				 !(vu_trace_started && Pcsx2Trace::DidVuTraceHitLimit()) &&
+				 !(s_stop_after_sif_limit && Pcsx2Trace::DidSifTraceHitLimit()))));
+		Pcsx2Trace::SetCoreEventSchedulerCallback(nullptr);
+		s_machine_checkpoint_trace_enabled = false;
 
 		const u64 ee_records = Pcsx2Trace::GetEeTraceRecordsWritten();
 		const bool ee_hit_limit = Pcsx2Trace::DidEeTraceHitLimit();
@@ -1491,6 +1764,12 @@ namespace
 		const u64 ipu_records = Pcsx2Trace::GetIpuTraceRecordsWritten();
 		const bool ipu_hit_limit = Pcsx2Trace::DidIpuTraceHitLimit();
 		const std::string ipu_trace_error = Pcsx2Trace::GetIpuTraceError();
+		const u64 machine_checkpoint_records =
+			Pcsx2Trace::GetMachineCheckpointTraceRecordsWritten();
+		const bool machine_checkpoint_hit_limit =
+			Pcsx2Trace::DidMachineCheckpointTraceHitLimit();
+		const std::string machine_checkpoint_trace_error =
+			Pcsx2Trace::GetMachineCheckpointTraceError();
 		const u64 sif_records = Pcsx2Trace::GetSifTraceRecordsWritten();
 		const bool sif_hit_limit = Pcsx2Trace::DidSifTraceHitLimit();
 		const std::string sif_trace_error = Pcsx2Trace::GetSifTraceError();
@@ -1507,6 +1786,8 @@ namespace
 		const u64 vu_instructions_seen = Pcsx2Trace::GetVuTraceInstructionRecordsSeen();
 		const bool vu_hit_limit = Pcsx2Trace::DidVuTraceHitLimit();
 		const std::string vu_trace_error = Pcsx2Trace::GetVuTraceError();
+		if (machine_checkpoint_trace_started)
+			Pcsx2Trace::StopMachineCheckpointTrace();
 		if (vu_trace_started)
 			Pcsx2Trace::StopVuTrace();
 		if (vif_trace_started)
@@ -1567,6 +1848,23 @@ namespace
 		{
 			std::fprintf(stderr, "IPU trace failed after %llu records: %s\n",
 				static_cast<unsigned long long>(ipu_records), ipu_trace_error.c_str());
+			return 4;
+		}
+		if (!machine_checkpoint_trace_error.empty())
+		{
+			std::fprintf(stderr, "Machine checkpoint trace failed after %llu records: %s\n",
+				static_cast<unsigned long long>(machine_checkpoint_records),
+				machine_checkpoint_trace_error.c_str());
+			return 4;
+		}
+		if (machine_checkpoint_trace_started && options.max_machine_checkpoint_records != 0 &&
+			(!machine_checkpoint_hit_limit ||
+			 machine_checkpoint_records != options.max_machine_checkpoint_records))
+		{
+			std::fprintf(stderr,
+				"Machine checkpoint trace stopped before its required limit: wrote %llu of %llu records.\n",
+				static_cast<unsigned long long>(machine_checkpoint_records),
+				static_cast<unsigned long long>(options.max_machine_checkpoint_records));
 			return 4;
 		}
 		if (!sif_trace_error.empty())
@@ -1630,6 +1928,13 @@ namespace
 				static_cast<unsigned long long>(ipu_records), options.ipu_output_path.c_str(),
 				ipu_hit_limit ? " (hit limit)" : "");
 		}
+		if (machine_checkpoint_trace_started)
+		{
+			std::fprintf(stdout, "wrote %llu machine checkpoint records to %s%s\n",
+				static_cast<unsigned long long>(machine_checkpoint_records),
+				options.machine_checkpoint_output_path.c_str(),
+				machine_checkpoint_hit_limit ? " (hit limit)" : "");
+		}
 		if (sif_trace_started)
 		{
 			std::fprintf(stdout, "wrote %llu SIF FIFO transfer records to %s%s\n",
@@ -1668,7 +1973,14 @@ namespace
 				static_cast<unsigned long long>(options.iop_dump_address),
 				options.iop_dump_path.c_str());
 		}
+		if (machine_checkpoint_trace_started)
+		{
+			return (machine_checkpoint_hit_limit &&
+				(options.max_machine_checkpoint_records == 0 ||
+				 machine_checkpoint_records == options.max_machine_checkpoint_records)) ? 0 : 1;
+		}
 		return (ee_hit_limit || iop_hit_limit || mem_hit_limit || gs_hit_limit || ipu_hit_limit ||
+			machine_checkpoint_hit_limit ||
 			sif_hit_limit || core_event_hit_limit || spu2_hit_limit || vif_hit_limit || vu_hit_limit) ? 0 : 1;
 	}
 } // namespace

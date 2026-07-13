@@ -6,6 +6,7 @@
 
 #include "Common.h"
 #include <cmath>
+#include "DebugTools/MachineCheckpointTrace.h"
 #include "VUmicro.h"
 #include "MTVU.h"
 
@@ -73,6 +74,7 @@ void vu1ExecMicro(u32 addr)
 
 	CpuVU1->SetStartPC(VU1.VI[REG_TPC].UL << 3);
 	_vuExecMicroDebug(VU1);
+	Pcsx2Trace::NotifyMachineCheckpointVu1ProgramStarted();
 	if(!INSTANT_VU1)
 		CpuVU1->ExecuteBlock(1);
 	else

@@ -26,6 +26,7 @@
 #include "DebugTools/Breakpoints.h"
 #if !defined(VITASX2_VITA) || defined(VITASX2_QEMU_VALIDATION)
 #include "DebugTools/CoreEventTrace.h"
+#include "DebugTools/MachineCheckpointTrace.h"
 #endif
 #include "DebugTools/MIPSAnalyst.h"
 #include "DebugTools/SymbolGuardian.h"
@@ -517,6 +518,8 @@ __fi void _cpuEventTest_Shared()
 	TraceEeCoreEvent(Pcsx2Trace::CoreEventKind::Scheduler,
 		Pcsx2Trace::CoreEventPhase::Exit, Pcsx2Trace::CoreEventId::None,
 		cpuRegs.nextEventCycle);
+	Pcsx2Trace::RecordPendingMachineCheckpointAtEventTest();
+	Pcsx2Trace::RunCoreEventSchedulerCallback();
 #endif
 }
 

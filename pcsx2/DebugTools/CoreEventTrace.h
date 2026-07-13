@@ -12,6 +12,16 @@ class Error;
 
 namespace Pcsx2Trace
 {
+	using CoreEventSchedulerCallback = void (*)();
+
+	enum CoreEventTraceExecutionProvider : u32
+	{
+		CoreEventTraceExecutionEeRecompiler = 1u << 0,
+		CoreEventTraceExecutionIopRecompiler = 1u << 1,
+		CoreEventTraceExecutionVu0Recompiler = 1u << 2,
+		CoreEventTraceExecutionVu1Recompiler = 1u << 3,
+	};
+
 	enum class CoreEventKind : u8
 	{
 		DomainStatus = 0,
@@ -60,6 +70,7 @@ namespace Pcsx2Trace
 		u64 max_records = 0;
 		u64 skip_records = 0;
 		u64 after_sif_records = 0;
+		u32 execution_provider_mask = 0;
 		bool wait_for_elf_entry = true;
 	};
 
@@ -67,6 +78,8 @@ namespace Pcsx2Trace
 	void StopCoreEventTrace();
 
 	bool IsCoreEventTraceEnabled();
+	void SetCoreEventSchedulerCallback(CoreEventSchedulerCallback callback);
+	void RunCoreEventSchedulerCallback();
 	void NotifyCoreEventElfEntry(u32 pc);
 	bool RecordCoreEvent(CoreEventKind kind, CoreEventPhase phase, CoreEventDomain domain,
 		CoreEventId event_id, u64 target_cycle, const std::array<u32, 11>& fields);

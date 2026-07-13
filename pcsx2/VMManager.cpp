@@ -7,8 +7,19 @@
 #include "CDVD/IsoReader.h"
 #include "Counters.h"
 #include "DEV9/DEV9.h"
+#include "DebugTools/CoreEventTrace.h"
 #include "DebugTools/DebugInterface.h"
+#include "DebugTools/EeTrace.h"
+#include "DebugTools/GsTrace.h"
+#include "DebugTools/IopTrace.h"
+#include "DebugTools/IpuTrace.h"
+#include "DebugTools/MachineCheckpointTrace.h"
+#include "DebugTools/MemTrace.h"
+#include "DebugTools/SifTrace.h"
+#include "DebugTools/Spu2Trace.h"
 #include "DebugTools/SymbolImporter.h"
+#include "DebugTools/VifTrace.h"
+#include "DebugTools/VuTrace.h"
 #include "Elfheader.h"
 #include "FW.h"
 #include "GS.h"
@@ -2876,6 +2887,20 @@ void VMManager::Internal::EntryPointCompilingOnCPUThread()
 	Console.WriteLn(
 		Color_StrongGreen, fmt::format("ELF {} with entry point at 0x{:08X} is executing.", s_elf_path, s_elf_entry_point));
 	s_elf_executed = true;
+
+	// This is the common ELF-entry seam for both the interpreter and recompilers.
+	// Keep trace capture gating independent of the selected CPU provider.
+	Pcsx2Trace::NotifyCoreEventElfEntry(s_elf_entry_point);
+	Pcsx2Trace::NotifyEeElfEntry(s_elf_entry_point);
+	Pcsx2Trace::NotifyMemElfEntry(s_elf_entry_point);
+	Pcsx2Trace::NotifyGsElfEntry(s_elf_entry_point);
+	Pcsx2Trace::NotifyIopElfEntry(s_elf_entry_point);
+	Pcsx2Trace::NotifyIpuElfEntry(s_elf_entry_point);
+	Pcsx2Trace::NotifyMachineCheckpointElfEntry(s_elf_entry_point);
+	Pcsx2Trace::NotifySifElfEntry(s_elf_entry_point);
+	Pcsx2Trace::NotifySpu2ElfEntry(s_elf_entry_point);
+	Pcsx2Trace::NotifyVifElfEntry(s_elf_entry_point);
+	Pcsx2Trace::NotifyVuElfEntry(s_elf_entry_point);
 
 	if (reset_speed_limiter)
 	{

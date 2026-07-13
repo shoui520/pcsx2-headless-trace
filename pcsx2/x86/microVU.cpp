@@ -3,6 +3,7 @@
 
 #include "microVU.h"
 
+#include "DebugTools/MachineCheckpointTrace.h"
 #include "common/AlignedMalloc.h"
 #include "common/Perf.h"
 #include "common/StringUtil.h"
@@ -391,6 +392,7 @@ void recMicroVU1::Execute(u32 cycles)
 		microVU1.regs().flags &= ~0x4;
 		hwIntcIrq(7);
 	}
+	Pcsx2Trace::NotifyMachineCheckpointVu1ExecutionCompleted();
 }
 
 void recMicroVU0::Clear(u32 addr, u32 size)
