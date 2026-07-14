@@ -80,6 +80,7 @@ namespace
 		u64 machine_checkpoint_skip_records = 0;
 		u64 machine_checkpoint_after_sif_records = 0;
 		u64 machine_checkpoint_after_vif_records = 0;
+		u64 machine_checkpoint_after_vsync_frames = 0;
 		u64 sif_skip_records = 0;
 		u64 core_event_skip_records = 0;
 		u64 core_event_after_sif_records = 0;
@@ -240,6 +241,8 @@ namespace
 			"                         Gate checkpoints until N observed SIF records.\n"
 			"  --machine-checkpoint-after-vif N\n"
 			"                         Gate checkpoints until N observed VIF records.\n"
+			"  --machine-checkpoint-after-vsync N\n"
+			"                         Gate checkpoints until N completed VSync frames since trace start (normally ELF entry).\n"
 			"  --sif-skip-records N  Skip N SIF records before writing.\n"
 			"  --core-event-skip-records N\n"
 			"                         Skip N core-event records before writing.\n"
@@ -783,6 +786,14 @@ namespace
 				if (++i >= argc || !ParseU64(argv[i], &options->machine_checkpoint_after_vif_records))
 				{
 					std::fprintf(stderr, "--machine-checkpoint-after-vif requires an integer.\n");
+					return false;
+				}
+			}
+			else if (arg == "--machine-checkpoint-after-vsync")
+			{
+				if (++i >= argc || !ParseU64(argv[i], &options->machine_checkpoint_after_vsync_frames))
+				{
+					std::fprintf(stderr, "--machine-checkpoint-after-vsync requires an integer.\n");
 					return false;
 				}
 			}
@@ -1626,6 +1637,7 @@ namespace
 			trace_config.skip_records = options.machine_checkpoint_skip_records;
 			trace_config.after_sif_records = options.machine_checkpoint_after_sif_records;
 			trace_config.after_vif_records = options.machine_checkpoint_after_vif_records;
+			trace_config.after_vsync_frames = options.machine_checkpoint_after_vsync_frames;
 			trace_config.wait_for_elf_entry = options.wait_for_elf_entry;
 			if (!Pcsx2Trace::StartMachineCheckpointTrace(trace_config, &error))
 			{
