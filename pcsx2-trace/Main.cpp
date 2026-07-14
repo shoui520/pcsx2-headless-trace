@@ -19,6 +19,8 @@
 #include "pcsx2/R5900.h"
 #include "pcsx2/SIO/Pad/Pad.h"
 #include "pcsx2/SIO/Pad/PadDualshock2.h"
+#include "pcsx2/SaveState.h"
+#include "pcsx2/SaveStateRaw.h"
 #include "pcsx2/VMManager.h"
 
 #include "common/Error.h"
@@ -26,6 +28,7 @@
 #include "common/MemorySettingsInterface.h"
 #include "common/Path.h"
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -55,6 +58,8 @@ namespace
 		std::string spu2_output_path;
 		std::string vif_output_path;
 		std::string vu_output_path;
+		std::string replay_state_input_path;
+		std::string replay_state_output_path;
 		std::string gs_debug_dump_directory;
 		std::string iop_dump_path;
 		std::string data_root;
@@ -116,6 +121,7 @@ namespace
 		bool recompiler_ee = false;
 		bool recompiler_iop = false;
 		bool recompiler_vu = false;
+		bool replay_state_checkpoint_start = false;
 		bool stop_after_sif_limit = false;
 	};
 
@@ -198,6 +204,12 @@ namespace
 			"  --spu2-out trace.bin  Write SPU2 48 kHz mixer output records.\n"
 			"  --vif-out trace.bin   Write VIF command and unpack effect records.\n"
 			"  --vu-out trace.bin    Write VU0/VU1 interpreter micro-step records.\n"
+			"  --replay-state-in state.pcsx2raw\n"
+			"                         Load a validated PCSX2 named-entry state after VM initialization.\n"
+			"  --replay-state-out state.pcsx2raw\n"
+			"                         Save a validated named-entry state at the terminal machine checkpoint.\n"
+			"  --replay-state-checkpoint-start\n"
+			"                         Record the loaded state before the first guest instruction.\n"
 			"  --pad-pulse-script    Alternate deterministic EE-cycle START/CROSS pulses after ELF entry.\n"
 			"  --recompiler-ee       Run the native EE recompiler (CORE/SIF traces do not require EE instruction hooks).\n"
 			"  --recompiler-iop      Run the native IOP recompiler.\n"
@@ -531,6 +543,28 @@ namespace
 					return false;
 				}
 				options->vu_output_path = argv[i];
+			}
+			else if (arg == "--replay-state-in")
+			{
+				if (++i >= argc)
+				{
+					std::fprintf(stderr, "--replay-state-in requires a path.\n");
+					return false;
+				}
+				options->replay_state_input_path = argv[i];
+			}
+			else if (arg == "--replay-state-out")
+			{
+				if (++i >= argc)
+				{
+					std::fprintf(stderr, "--replay-state-out requires a path.\n");
+					return false;
+				}
+				options->replay_state_output_path = argv[i];
+			}
+			else if (arg == "--replay-state-checkpoint-start")
+			{
+				options->replay_state_checkpoint_start = true;
 			}
 			else if (arg == "--pad-pulse-script")
 			{
@@ -1013,6 +1047,105 @@ namespace
 			std::fprintf(stderr, "--machine-checkpoint-after-sif requires --sif-out.\n");
 			return false;
 		}
+		if (!options->replay_state_output_path.empty() &&
+			options->machine_checkpoint_output_path.empty())
+		{
+			std::fprintf(stderr,
+				"--replay-state-out requires --machine-checkpoint-out so capture occurs at a quiescent PCSX2-owned seam.\n");
+			return false;
+		}
+		if (!options->replay_state_output_path.empty() &&
+			options->max_machine_checkpoint_records == 0)
+		{
+			std::fprintf(stderr,
+				"--replay-state-out requires nonzero --machine-checkpoint-max.\n");
+			return false;
+		}
+		if (!options->replay_state_input_path.empty() &&
+			!FileSystem::FileExists(options->replay_state_input_path.c_str()))
+		{
+			std::fprintf(stderr, "Replay state does not exist: %s\n",
+				options->replay_state_input_path.c_str());
+			return false;
+		}
+		if (!options->replay_state_input_path.empty() && !options->wait_for_elf_entry)
+		{
+			std::fprintf(stderr,
+				"--replay-state-in requires --trace-from entry so initialization cannot enter the replay trace.\n");
+			return false;
+		}
+		if (options->replay_state_checkpoint_start &&
+			(options->replay_state_input_path.empty() ||
+			 options->machine_checkpoint_output_path.empty()))
+		{
+			std::fprintf(stderr,
+				"--replay-state-checkpoint-start requires --replay-state-in and --machine-checkpoint-out.\n");
+			return false;
+		}
+		if (!options->replay_state_input_path.empty() &&
+			!options->replay_state_output_path.empty() &&
+			Path::Canonicalize(options->replay_state_input_path) ==
+				Path::Canonicalize(options->replay_state_output_path))
+		{
+			std::fprintf(stderr, "Replay state input and output paths must be distinct.\n");
+			return false;
+		}
+		const auto normalize_path = [](const std::string& path) {
+			if (path.empty())
+				return std::string();
+			return Path::Canonicalize(Path::IsAbsolute(path) ? path :
+				Path::Combine(FileSystem::GetWorkingDirectory(), path));
+		};
+		const std::array<const std::string*, 12> writable_artifacts = {{
+			&options->output_path, &options->iop_output_path,
+			&options->mem_output_path, &options->gs_output_path,
+			&options->ipu_output_path, &options->machine_checkpoint_output_path,
+			&options->sif_output_path, &options->core_event_output_path,
+			&options->spu2_output_path, &options->vif_output_path,
+			&options->vu_output_path, &options->iop_dump_path,
+		}};
+		const std::string replay_input_normalized =
+			normalize_path(options->replay_state_input_path);
+		const std::string replay_output_normalized =
+			normalize_path(options->replay_state_output_path);
+		if (!replay_input_normalized.empty() &&
+			replay_input_normalized == replay_output_normalized)
+		{
+			std::fprintf(stderr, "Replay state input and output paths must be distinct.\n");
+			return false;
+		}
+		for (const std::string* artifact : writable_artifacts)
+		{
+			if (!replay_input_normalized.empty() && !artifact->empty() &&
+				replay_input_normalized == normalize_path(*artifact))
+			{
+				std::fprintf(stderr,
+					"Replay state input aliases a writable trace artifact: %s\n",
+					artifact->c_str());
+				return false;
+			}
+			if (!replay_output_normalized.empty() && !artifact->empty() &&
+				replay_output_normalized == normalize_path(*artifact))
+			{
+				std::fprintf(stderr,
+					"Replay state output aliases another writable artifact: %s\n",
+					artifact->c_str());
+				return false;
+			}
+		}
+		for (const std::string* protected_input :
+			std::array<const std::string*, 3>{{
+				&options->bios_path, &options->elf_path, &options->ee_match_trace_path}})
+		{
+			if (!replay_output_normalized.empty() && !protected_input->empty() &&
+				replay_output_normalized == normalize_path(*protected_input))
+			{
+				std::fprintf(stderr,
+					"Replay state output aliases a required input: %s\n",
+					protected_input->c_str());
+				return false;
+			}
+		}
 		if (!options->machine_checkpoint_diagnostic_directory.empty() &&
 			options->machine_checkpoint_output_path.empty())
 		{
@@ -1164,6 +1297,8 @@ namespace
 		SetBool(si, "EmuCore", "InhibitScreensaver", false);
 		SetBool(si, "EmuCore", "WarnAboutUnsafeSettings", false);
 		SetBool(si, "EmuCore", "HostFs", false);
+		SetBool(si, "DEV9/Eth", "EthEnable", false);
+		SetBool(si, "DEV9/Hdd", "HddEnable", false);
 		SetBool(si, "EmuCore", "ManuallySetRealTimeClock", true);
 		SetInt(si, "EmuCore", "RtcYear", 20);
 		SetInt(si, "EmuCore", "RtcMonth", 3);
@@ -1267,6 +1402,9 @@ namespace
 			output_path_for_defaults = options.vif_output_path;
 		if (output_path_for_defaults.empty())
 			output_path_for_defaults = options.vu_output_path;
+		if (output_path_for_defaults.empty())
+			output_path_for_defaults = !options.replay_state_output_path.empty() ?
+				options.replay_state_output_path : options.replay_state_input_path;
 		EmuFolders::DataRoot = options.data_root.empty() ?
 			Path::Combine(Path::GetDirectory(output_path_for_defaults), "pcsx2-trace-data") :
 			options.data_root;
@@ -1321,6 +1459,152 @@ namespace
 			return false;
 		}
 
+		return true;
+	}
+
+	void NotifyReplayTraceStart();
+
+	bool LoadReplayState(const TraceOptions& options, Error* error)
+	{
+		if (options.replay_state_input_path.empty())
+			return true;
+
+		const std::optional<std::vector<u8>> raw_bytes =
+			FileSystem::ReadBinaryFile(options.replay_state_input_path.c_str());
+		if (!raw_bytes.has_value())
+		{
+			Error::SetStringFmt(error, "Failed to read replay state '{}'.",
+				options.replay_state_input_path);
+			return false;
+		}
+
+		std::unique_ptr<ArchiveEntryList> entries =
+			SaveStateRaw::Decode(raw_bytes.value(), error);
+		if (!entries)
+			return false;
+
+		const PortableStateLoadResult load_result =
+			SaveState_LoadPortableState(*entries, error);
+		if (load_result != PortableStateLoadResult::Loaded)
+			return false;
+
+		if (EmuConfig.DEV9.EthEnable || EmuConfig.DEV9.HddEnable)
+		{
+			Error::SetString(error,
+				"Portable replay requires DEV9 Ethernet and HDD disabled.");
+			return false;
+		}
+		Pcsx2Trace::BeginPortableReplayExternalDeviceAccessWindow();
+		NotifyReplayTraceStart();
+		if (options.replay_state_checkpoint_start &&
+			!Pcsx2Trace::RecordMachineCheckpointAtReplayStart())
+		{
+			Error::SetString(error, Pcsx2Trace::GetMachineCheckpointTraceError());
+			return false;
+		}
+		return true;
+	}
+
+	bool FinishPortableReplayExternalDeviceAccessWindow(Error* error)
+	{
+		const Pcsx2Trace::PortableReplayExternalDeviceAccessCounts counts =
+			Pcsx2Trace::GetPortableReplayExternalDeviceAccessCounts();
+		Pcsx2Trace::EndPortableReplayExternalDeviceAccessWindow();
+		std::fprintf(stdout,
+			"portable_replay external_device_accesses dev9_reads=%llu dev9_writes=%llu "
+			"dev9_dma=%llu dev9_irq_scheduled=%llu dev9_irq_delivered=%llu "
+			"firewire_reads=%llu firewire_writes=%llu firewire_irq=%llu status=%s\n",
+			static_cast<unsigned long long>(counts.dev9_reads),
+			static_cast<unsigned long long>(counts.dev9_writes),
+			static_cast<unsigned long long>(counts.dev9_dma),
+			static_cast<unsigned long long>(counts.dev9_irq_scheduled),
+			static_cast<unsigned long long>(counts.dev9_irq_delivered),
+			static_cast<unsigned long long>(counts.firewire_reads),
+			static_cast<unsigned long long>(counts.firewire_writes),
+			static_cast<unsigned long long>(counts.firewire_irq),
+			counts.IsZero() ? "pass" : "rejected");
+		if (!counts.IsZero())
+		{
+			Error::SetString(error,
+				"Portable replay touched unserialized DEV9 or FireWire state during the bounded continuation.");
+			return false;
+		}
+		return true;
+	}
+
+	void NotifyReplayTraceStart()
+	{
+		// The restored state already marks the ELF as executed, so the normal ELF
+		// hook will not run again. Arm every trace at the loaded architectural PC
+		// before VMManager::Execute() can execute one guest instruction.
+		const u32 pc = cpuRegs.pc;
+		Pcsx2Trace::NotifyCoreEventElfEntry(pc);
+		Pcsx2Trace::NotifyEeElfEntry(pc);
+		Pcsx2Trace::NotifyMemElfEntry(pc);
+		Pcsx2Trace::NotifyGsElfEntry(pc);
+		Pcsx2Trace::NotifyIopElfEntry(pc);
+		Pcsx2Trace::NotifyIpuElfEntry(pc);
+		Pcsx2Trace::NotifyMachineCheckpointElfEntry(pc);
+		Pcsx2Trace::NotifySifElfEntry(pc);
+		Pcsx2Trace::NotifySpu2ElfEntry(pc);
+		Pcsx2Trace::NotifyVifElfEntry(pc);
+		Pcsx2Trace::NotifyVuElfEntry(pc);
+	}
+
+	bool SaveReplayState(const TraceOptions& options, Error* error)
+	{
+		if (options.replay_state_output_path.empty())
+			return true;
+
+		std::vector<u8> raw_bytes;
+		const auto encode_current_state = [&](std::vector<u8>* destination) {
+			std::unique_ptr<ArchiveEntryList> entries =
+				SaveState_DownloadPortableState(error);
+			return entries && SaveStateRaw::Encode(*entries, destination, error);
+		};
+		if (!encode_current_state(&raw_bytes))
+			return false;
+
+		// Every portable component is required to be observationally read-only
+		// while saving. Serialize twice at the same stopped event seam so a
+		// component which publishes/reset its own live state after writing that
+		// field cannot create a replay seed different from the checkpointed VM.
+		std::vector<u8> verification_bytes;
+		if (!encode_current_state(&verification_bytes))
+			return false;
+		if (verification_bytes != raw_bytes)
+		{
+			Error::SetString(error,
+				"Portable replay serialization mutated or sampled unstable machine state.");
+			return false;
+		}
+
+		const std::string output_directory(
+			Path::GetDirectory(options.replay_state_output_path));
+		if (!output_directory.empty() &&
+			!FileSystem::EnsureDirectoryExists(output_directory.c_str(), false, error))
+		{
+			return false;
+		}
+		if (!FileSystem::WriteBinaryFile(options.replay_state_output_path.c_str(),
+				raw_bytes.data(), raw_bytes.size()))
+		{
+			Error::SetStringFmt(error, "Failed to write replay state '{}'.",
+				options.replay_state_output_path);
+			return false;
+		}
+
+		// Re-read the durable artifact rather than trusting only the in-memory
+		// encoder result. Partial/trailing output must not be published as a seed.
+		const std::optional<std::vector<u8>> durable_bytes =
+			FileSystem::ReadBinaryFile(options.replay_state_output_path.c_str());
+		if (!durable_bytes.has_value() || !SaveStateRaw::Decode(durable_bytes.value(), error))
+		{
+			FileSystem::DeleteFilePath(options.replay_state_output_path.c_str());
+			if (!error->IsValid())
+				Error::SetString(error, "Failed to validate the durable replay state.");
+			return false;
+		}
 		return true;
 	}
 
@@ -1718,7 +2002,36 @@ namespace
 			VMManager::Internal::CPUThreadShutdown();
 			return 3;
 		}
-
+		if (!LoadReplayState(options, &error))
+		{
+			std::fprintf(stderr, "Failed to load replay state: %s\n",
+				error.GetDescription().c_str());
+			if (machine_checkpoint_trace_started)
+				Pcsx2Trace::StopMachineCheckpointTrace();
+			if (vu_trace_started)
+				Pcsx2Trace::StopVuTrace();
+			if (vif_trace_started)
+				Pcsx2Trace::StopVifTrace();
+			if (spu2_trace_started)
+				Pcsx2Trace::StopSpu2Trace();
+			if (core_event_trace_started)
+				Pcsx2Trace::StopCoreEventTrace();
+			if (sif_trace_started)
+				Pcsx2Trace::StopSifTrace();
+			if (ipu_trace_started)
+				Pcsx2Trace::StopIpuTrace();
+			if (gs_trace_started)
+				Pcsx2Trace::StopGsTrace();
+			if (mem_trace_started)
+				Pcsx2Trace::StopMemTrace();
+			if (iop_trace_started)
+				Pcsx2Trace::StopIopTrace();
+			if (ee_trace_started)
+				Pcsx2Trace::StopEeTrace();
+			VMManager::Shutdown(false);
+			VMManager::Internal::CPUThreadShutdown();
+			return 3;
+		}
 		VMManager::SetState(VMState::Running);
 		s_pad_pulse_script_enabled = options.pad_pulse_script;
 		s_stop_after_sif_limit = options.stop_after_sif_limit;
@@ -1742,24 +2055,38 @@ namespace
 		// PCSX2's CPU-thread owner calls Execute() again after a runtime provider
 		// switch. Fast boot applies the game configuration at ELF entry, so a
 		// recompiler-enabled trace must survive that first intentional return.
-		do
+		if (!machine_checkpoint_trace_started ||
+			!Pcsx2Trace::DidMachineCheckpointTraceHitLimit())
 		{
-			VMManager::Execute();
-		} while (VMManager::GetState() == VMState::Running && !auxiliary_trace_failed() &&
-			(machine_checkpoint_trace_started ?
-				!Pcsx2Trace::DidMachineCheckpointTraceHitLimit() :
-				(!(ee_trace_started && Pcsx2Trace::DidEeTraceHitLimit()) &&
-				 !(iop_trace_started && Pcsx2Trace::DidIopTraceHitLimit()) &&
-				 !(mem_trace_started && Pcsx2Trace::DidMemTraceHitLimit()) &&
-				 !(gs_trace_started && Pcsx2Trace::DidGsTraceHitLimit()) &&
-				 !(ipu_trace_started && Pcsx2Trace::DidIpuTraceHitLimit()) &&
-				 !(core_event_trace_started && Pcsx2Trace::DidCoreEventTraceHitLimit()) &&
-				 !(spu2_trace_started && Pcsx2Trace::DidSpu2TraceHitLimit()) &&
-				 !(vif_trace_started && Pcsx2Trace::DidVifTraceHitLimit()) &&
-				 !(vu_trace_started && Pcsx2Trace::DidVuTraceHitLimit()) &&
-				 !(s_stop_after_sif_limit && Pcsx2Trace::DidSifTraceHitLimit()))));
+			do
+			{
+				VMManager::Execute();
+			} while (VMManager::GetState() == VMState::Running && !auxiliary_trace_failed() &&
+				(machine_checkpoint_trace_started ?
+					!Pcsx2Trace::DidMachineCheckpointTraceHitLimit() :
+					(!(ee_trace_started && Pcsx2Trace::DidEeTraceHitLimit()) &&
+					 !(iop_trace_started && Pcsx2Trace::DidIopTraceHitLimit()) &&
+					 !(mem_trace_started && Pcsx2Trace::DidMemTraceHitLimit()) &&
+					 !(gs_trace_started && Pcsx2Trace::DidGsTraceHitLimit()) &&
+					 !(ipu_trace_started && Pcsx2Trace::DidIpuTraceHitLimit()) &&
+					 !(core_event_trace_started && Pcsx2Trace::DidCoreEventTraceHitLimit()) &&
+					 !(spu2_trace_started && Pcsx2Trace::DidSpu2TraceHitLimit()) &&
+					 !(vif_trace_started && Pcsx2Trace::DidVifTraceHitLimit()) &&
+					 !(vu_trace_started && Pcsx2Trace::DidVuTraceHitLimit()) &&
+					 !(s_stop_after_sif_limit && Pcsx2Trace::DidSifTraceHitLimit()))));
+		}
 		Pcsx2Trace::SetCoreEventSchedulerCallback(nullptr);
 		s_machine_checkpoint_trace_enabled = false;
+		bool replay_external_device_accesses_valid = true;
+		std::string replay_external_device_accesses_error;
+		if (!options.replay_state_input_path.empty())
+		{
+			Error access_error;
+			replay_external_device_accesses_valid =
+				FinishPortableReplayExternalDeviceAccessWindow(&access_error);
+			if (!replay_external_device_accesses_valid)
+				replay_external_device_accesses_error = access_error.GetDescription();
+		}
 
 		const u64 ee_records = Pcsx2Trace::GetEeTraceRecordsWritten();
 		const bool ee_hit_limit = Pcsx2Trace::DidEeTraceHitLimit();
@@ -1798,6 +2125,31 @@ namespace
 		const u64 vu_instructions_seen = Pcsx2Trace::GetVuTraceInstructionRecordsSeen();
 		const bool vu_hit_limit = Pcsx2Trace::DidVuTraceHitLimit();
 		const std::string vu_trace_error = Pcsx2Trace::GetVuTraceError();
+		bool replay_state_saved = true;
+		std::string replay_state_error;
+		if (!options.replay_state_output_path.empty())
+		{
+			if (!replay_external_device_accesses_valid)
+			{
+				replay_state_saved = false;
+				replay_state_error = replay_external_device_accesses_error;
+			}
+			else if (!machine_checkpoint_hit_limit || machine_checkpoint_records == 0 ||
+				(options.max_machine_checkpoint_records != 0 &&
+				 machine_checkpoint_records != options.max_machine_checkpoint_records))
+			{
+				replay_state_saved = false;
+				replay_state_error =
+					"terminal machine checkpoint was not reached; refusing to publish a replay seed";
+			}
+			else
+			{
+				Error save_error;
+				replay_state_saved = SaveReplayState(options, &save_error);
+				if (!replay_state_saved)
+					replay_state_error = save_error.GetDescription();
+			}
+		}
 		if (machine_checkpoint_trace_started)
 			Pcsx2Trace::StopMachineCheckpointTrace();
 		if (vu_trace_started)
@@ -1867,6 +2219,18 @@ namespace
 			std::fprintf(stderr, "Machine checkpoint trace failed after %llu records: %s\n",
 				static_cast<unsigned long long>(machine_checkpoint_records),
 				machine_checkpoint_trace_error.c_str());
+			return 4;
+		}
+		if (!replay_external_device_accesses_valid)
+		{
+			std::fprintf(stderr, "Portable replay external-device gate failed: %s\n",
+				replay_external_device_accesses_error.c_str());
+			return 4;
+		}
+		if (!replay_state_saved)
+		{
+			std::fprintf(stderr, "Failed to save replay state: %s\n",
+				replay_state_error.c_str());
 			return 4;
 		}
 		if (machine_checkpoint_trace_started && options.max_machine_checkpoint_records != 0 &&
@@ -1946,6 +2310,11 @@ namespace
 				static_cast<unsigned long long>(machine_checkpoint_records),
 				options.machine_checkpoint_output_path.c_str(),
 				machine_checkpoint_hit_limit ? " (hit limit)" : "");
+		}
+		if (!options.replay_state_output_path.empty())
+		{
+			std::fprintf(stdout, "wrote replay state to %s\n",
+				options.replay_state_output_path.c_str());
 		}
 		if (sif_trace_started)
 		{

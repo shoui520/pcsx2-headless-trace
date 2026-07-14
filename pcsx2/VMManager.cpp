@@ -1837,6 +1837,45 @@ bool SaveStateBase::vmFreeze()
 	// We have to test all the variables here, because we could be loading a state created during ELF load, after the ELF has loaded.
 	if (IsLoading())
 	{
+		if (IsPortableReplay())
+		{
+			const u32 replay_crc = s_current_crc;
+			const std::string replay_elf = s_elf_path;
+			const bool replay_elf_executed = s_elf_executed;
+			if (replay_elf.empty())
+			{
+				if (replay_crc != 0 || replay_elf_executed)
+				{
+					Console.Error("Portable replay contains an invalid empty ELF identity.");
+					m_error = true;
+					return false;
+				}
+				VMManager::ClearELFInfo();
+			}
+			else
+			{
+				// Re-read the ELF from the currently mounted disc. Normal PCSX2
+				// savestates tolerate a changed image; an oracle replay must not.
+				VMManager::UpdateELFInfo(replay_elf);
+				if (s_elf_path != replay_elf || s_current_crc != replay_crc)
+				{
+					Console.Error("Portable replay ELF identity does not match the mounted disc.");
+					m_error = true;
+					return false;
+				}
+				s_elf_executed = replay_elf_executed;
+			}
+
+			// ApplyGameFixes() forces InstantDMA while BIOS/EELOAD owns execution.
+			// Portable replay initialization necessarily happens in that phase, so
+			// restore the saved ELF phase before any event test can observe the flag.
+			// The trace configuration disables ordinary game fixes; calling
+			// HandleELFChange() here would also reapply host settings after machine
+			// state restoration instead of reinstating this one phase-owned value.
+			EmuConfig.Gamefixes.InstantDMAHack = !s_elf_executed;
+			return IsOkay();
+		}
+
 		// Might need new ELF info.
 		if (s_elf_path != prev_elf)
 		{

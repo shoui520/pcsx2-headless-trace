@@ -130,6 +130,7 @@ public:
 	V_VolumeSlide() = default;
 	V_VolumeSlide(s16 regval, s32 fullvol)
 		: Reg_VOL(regval)
+		, Counter(0)
 		, Value(fullvol)
 	{
 	}

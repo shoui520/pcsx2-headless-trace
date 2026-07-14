@@ -9,6 +9,7 @@
 #include <memory>
 
 struct Pcsx2Config;
+class StateWrapper;
 
 class AudioStream;
 
@@ -23,6 +24,12 @@ static constexpr u32 PSX_SAMPLE_RATE = 44100;
 /// Open/close, call at VM startup/shutdown.
 bool Open();
 void Close();
+
+/// Serializes the SPU2 machine state without host pointers, C++ padding, or
+/// host-sized fields. This is the PCSX2-owned content format used by the
+/// x86-to-AArch32 validation replay route; normal .p2s states keep using
+/// SPU2freeze().
+bool DoPortableState(StateWrapper& sw);
 
 /// Reset, rebooting VM or going into PSX mode.
 void Reset(bool psxmode);
@@ -83,4 +90,3 @@ extern u64 lClocks;
 extern void CounterUpdate(u32 DMAICounter);
 extern void TimeUpdate(u32 cClocks);
 extern void SPU2_FastWrite(u32 rmem, u16 value);
-

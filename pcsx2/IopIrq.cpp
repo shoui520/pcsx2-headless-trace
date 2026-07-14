@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "DEV9/DEV9.h"
+#include "DebugTools/MachineCheckpointTrace.h"
 #include "USB/USB.h"
 #include "IopHw.h"
 #include "IopDma.h"
@@ -34,6 +35,10 @@ void usbIrq(int cycles)
 
 void fwIrq()
 {
+#if defined(PCSX2_TRACE_ONLY)
+	Pcsx2Trace::NotifyPortableReplayExternalDeviceAccess(
+		Pcsx2Trace::PortableReplayExternalDeviceAccess::FireWireIrq);
+#endif
 	iopIntcIrq(24);
 }
 

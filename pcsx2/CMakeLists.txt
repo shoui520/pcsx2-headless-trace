@@ -103,6 +103,7 @@ set(pcsx2Sources
 	R5900OpcodeImpl.cpp
 	R5900OpcodeTables.cpp
 	SaveState.cpp
+	SaveStateRaw.cpp
 	ShiftJisToUnicode.cpp
 	Sif.cpp
 	Sif0.cpp
@@ -137,6 +138,16 @@ set(pcsx2Sources
 	VUmicroMem.cpp
 	VUops.cpp
 )
+
+# The VU interpreter models multiply and add as separate architectural
+# operations. Do not let the host compiler contract those expressions into an
+# FMA, or interpreter traces cease to be a stable oracle for the recompilers.
+if(NOT MSVC)
+	set_source_files_properties(VUops.cpp PROPERTIES
+		COMPILE_OPTIONS "-ffp-contract=off"
+		SKIP_PRECOMPILE_HEADERS TRUE
+	)
+endif()
 
 # Main pcsx2 header
 set(pcsx2Headers
@@ -180,6 +191,7 @@ set(pcsx2Headers
 	R5900.h
 	R5900OpcodeTables.h
 	SaveState.h
+	SaveStateRaw.h
 	ShaderCacheVersion.h
 	Sifcmd.h
 	Sif.h

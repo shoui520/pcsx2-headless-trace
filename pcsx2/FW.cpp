@@ -5,6 +5,10 @@
 #include "R3000A.h"
 #include "FW.h"
 
+#if defined(PCSX2_TRACE_ONLY)
+#include "DebugTools/MachineCheckpointTrace.h"
+#endif
+
 #include "common/Console.h"
 
 #include <cstdlib>
@@ -60,6 +64,10 @@ void PHYRead()
 
 u32 FWread32(u32 addr)
 {
+#if defined(PCSX2_TRACE_ONLY)
+	Pcsx2Trace::NotifyPortableReplayExternalDeviceAccess(
+		Pcsx2Trace::PortableReplayExternalDeviceAccess::FireWireRead);
+#endif
 	u32 ret = 0;
 
 	switch (addr)
@@ -97,6 +105,10 @@ u32 FWread32(u32 addr)
 
 void FWwrite32(u32 addr, u32 value)
 {
+#if defined(PCSX2_TRACE_ONLY)
+	Pcsx2Trace::NotifyPortableReplayExternalDeviceAccess(
+		Pcsx2Trace::PortableReplayExternalDeviceAccess::FireWireWrite);
+#endif
 	switch (addr)
 	{
 		//		Include other memory locations we want to catch here.

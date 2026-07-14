@@ -513,14 +513,18 @@ __fi void _cpuEventTest_Shared()
 	// Apply vsync and other counter nextCycles
 	cpuSetNextEvent(nextStartCounter, nextDeltaCounter);
 
-	eeEventTestIsActive = false;
 #if !defined(VITASX2_VITA) || defined(VITASX2_QEMU_VALIDATION)
 	TraceEeCoreEvent(Pcsx2Trace::CoreEventKind::Scheduler,
 		Pcsx2Trace::CoreEventPhase::Exit, Pcsx2Trace::CoreEventId::None,
 		cpuRegs.nextEventCycle);
 	Pcsx2Trace::RecordPendingMachineCheckpointAtEventTest();
+	// The trace callback owns this completed event seam. Keep the event-test
+	// marker asserted so recSafeExitExecution() requests its normal tail exit
+	// without replacing the checkpointed scheduler deadline with its zero
+	// mid-block-exit sentinel before portable replay serialization.
 	Pcsx2Trace::RunCoreEventSchedulerCallback();
 #endif
+	eeEventTestIsActive = false;
 }
 
 __ri void cpuTestINTCInts()

@@ -279,43 +279,54 @@ void ohci_hard_reset(OHCIState* ohci)
 	ohci_roothub_reset(ohci);
 }
 
+__fi static bool ohci_iop_ram_range_valid(u32 addr, u64 bytes)
+{
+	const u64 exposed_iop_ram = Ps2MemSize::ExposedIopRam;
+	return static_cast<u64>(addr) <= exposed_iop_ram &&
+		bytes <= exposed_iop_ram - static_cast<u64>(addr);
+}
+
 /* Get an array of dwords from main memory */
 __fi static int get_dwords(u32 addr, u32* buf, u32 num)
 {
-	if ((addr + (num * sizeof(u32))) > Ps2MemSize::ExposedIopRam)
+	const u64 bytes = static_cast<u64>(num) * sizeof(u32);
+	if (!ohci_iop_ram_range_valid(addr, bytes))
 		return 0;
 
-	std::memcpy(buf, iopMem->Main + addr, num * sizeof(u32));
+	std::memcpy(buf, iopMem->Main + addr, static_cast<size_t>(bytes));
 	return 1;
 }
 
 /* Get an array of words from main memory */
 __fi static int get_words(u32 addr, u16* buf, u32 num)
 {
-	if ((addr + (num * sizeof(u16))) > Ps2MemSize::ExposedIopRam)
+	const u64 bytes = static_cast<u64>(num) * sizeof(u16);
+	if (!ohci_iop_ram_range_valid(addr, bytes))
 		return 0;
 
-	std::memcpy(buf, iopMem->Main + addr, num * sizeof(u16));
+	std::memcpy(buf, iopMem->Main + addr, static_cast<size_t>(bytes));
 	return 1;
 }
 
 /* Put an array of dwords in to main memory */
 __fi static int put_dwords(u32 addr, u32* buf, u32 num)
 {
-	if ((addr + (num * sizeof(u32))) > Ps2MemSize::ExposedIopRam)
+	const u64 bytes = static_cast<u64>(num) * sizeof(u32);
+	if (!ohci_iop_ram_range_valid(addr, bytes))
 		return 0;
 
-	std::memcpy(iopMem->Main + addr, buf, num * sizeof(u32));
+	std::memcpy(iopMem->Main + addr, buf, static_cast<size_t>(bytes));
 	return 1;
 }
 
 /* Put an array of dwords in to main memory */
 __fi static int put_words(u32 addr, u16* buf, u32 num)
 {
-	if ((addr + (num * sizeof(u16))) > Ps2MemSize::ExposedIopRam)
+	const u64 bytes = static_cast<u64>(num) * sizeof(u16);
+	if (!ohci_iop_ram_range_valid(addr, bytes))
 		return 0;
 
-	std::memcpy(iopMem->Main + addr, buf, num * sizeof(u16));
+	std::memcpy(iopMem->Main + addr, buf, static_cast<size_t>(bytes));
 	return 1;
 }
 
@@ -362,13 +373,13 @@ static int ohci_copy_td(OHCIState* ohci, struct ohci_td* td, uint8_t* buf, u32 l
 	u32 ptr = td->cbp;
 	const u32 n = std::min<u32>(0x1000 - (ptr & 0xfff), len);
 
-	if ((ptr + n) > Ps2MemSize::ExposedIopRam)
+	if (!ohci_iop_ram_range_valid(ptr, n))
 		return 1;
 
 	if (write)
-		std::memcpy(iopMem->Main + ptr, buf, len);
+		std::memcpy(iopMem->Main + ptr, buf, n);
 	else
-		std::memcpy(buf, iopMem->Main + ptr, len);
+		std::memcpy(buf, iopMem->Main + ptr, n);
 
 	if (n == len)
 		return 0;
@@ -376,7 +387,7 @@ static int ohci_copy_td(OHCIState* ohci, struct ohci_td* td, uint8_t* buf, u32 l
 	buf += n;
 	len -= n;
 
-	if ((ptr + n) > Ps2MemSize::ExposedIopRam)
+	if (!ohci_iop_ram_range_valid(ptr, len))
 		return 1;
 
 	if (write)
@@ -394,13 +405,13 @@ static int ohci_copy_iso_td(OHCIState* ohci, u32 start_addr, u32 end_addr,
 	u32 ptr = start_addr;
 	const u32 n = std::min<u32>(0x1000 - (ptr & 0xfff), len);
 
-	if ((ptr + n) > Ps2MemSize::ExposedIopRam)
+	if (!ohci_iop_ram_range_valid(ptr, n))
 		return 1;
 
 	if (write)
-		std::memcpy(iopMem->Main + ptr, buf, len);
+		std::memcpy(iopMem->Main + ptr, buf, n);
 	else
-		std::memcpy(buf, iopMem->Main + ptr, len);
+		std::memcpy(buf, iopMem->Main + ptr, n);
 
 	if (n == len)
 		return 0;
@@ -408,7 +419,7 @@ static int ohci_copy_iso_td(OHCIState* ohci, u32 start_addr, u32 end_addr,
 	buf += n;
 	len -= n;
 
-	if ((ptr + n) > Ps2MemSize::ExposedIopRam)
+	if (!ohci_iop_ram_range_valid(ptr, len))
 		return 1;
 
 	if (write)
@@ -1099,7 +1110,7 @@ void ohci_frame_boundary(void* opaque)
 {
 	OHCIState* ohci = (OHCIState*)opaque;
 
-	if (ohci->hcca + sizeof(ohci_hcca) > Ps2MemSize::ExposedIopRam)
+	if (!ohci_iop_ram_range_valid(ohci->hcca, sizeof(ohci_hcca)))
 	{
 		Console.Error("ohci->hcca pointer is out of range.");
 		return;
