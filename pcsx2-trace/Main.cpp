@@ -16,12 +16,14 @@
 #include "pcsx2/DebugTools/VuTrace.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/IopMem.h"
+#include "pcsx2/R3000A.h"
 #include "pcsx2/R5900.h"
 #include "pcsx2/SIO/Pad/Pad.h"
 #include "pcsx2/SIO/Pad/PadDualshock2.h"
 #include "pcsx2/SaveState.h"
 #include "pcsx2/SaveStateRaw.h"
 #include "pcsx2/VMManager.h"
+#include "pcsx2/VUmicro.h"
 
 #include "common/Error.h"
 #include "common/FileSystem.h"
@@ -99,6 +101,7 @@ namespace
 		u32 mem_region_mask = Pcsx2Trace::MemTraceDefaultRegionMask;
 		u32 vu_unit_mask = Pcsx2Trace::VuTraceUnitMaskBoth;
 		bool wait_for_elf_entry = true;
+		bool ee_entry_state = false;
 		bool ee_match_ignore_timing_state = false;
 		bool ee_match_pc_only = false;
 		bool mem_sample_ee_trace = false;
@@ -183,6 +186,7 @@ namespace
 			"  --boot-disc           Boot the positional path as an ISO/disc image.\n"
 			"  --full-boot           Disable PCSX2 fast boot for --boot-disc.\n"
 			"  --out trace.bin       Write an EE/R5900 pre-instruction trace.\n"
+			"  --ee-entry-state      Write one complete EE trace-schema state record at ELF entry; valid with recompilers.\n"
 			"  --ee-match-trace trace.bin\n"
 			"                         Write only EE records matching this trace, scanning up to --max-instructions.\n"
 			"  --ee-match-ignore-timing-state\n"
@@ -423,6 +427,10 @@ namespace
 					return false;
 				}
 				options->output_path = argv[i];
+			}
+			else if (arg == "--ee-entry-state")
+			{
+				options->ee_entry_state = true;
 			}
 			else if (arg == "--ee-match-trace")
 			{
@@ -1013,6 +1021,22 @@ namespace
 			std::fprintf(stderr, "--ee-match-pc-only requires --ee-match-trace.\n");
 			return false;
 		}
+		if (options->ee_entry_state &&
+			(options->output_path.empty() || !options->wait_for_elf_entry ||
+			 options->max_instructions != 1 || options->ee_skip_records != 0 ||
+			 options->ee_after_sif_records != 0 ||
+			 !options->ee_match_trace_path.empty() || options->mem_sample_ee_trace))
+		{
+			std::fprintf(stderr,
+				"--ee-entry-state requires --out, --trace-from entry, --max-instructions 1, and no EE matching, skipping, SIF gate, or sampled MEM trace.\n");
+			return false;
+		}
+		if (options->ee_entry_state && !options->replay_state_input_path.empty())
+		{
+			std::fprintf(stderr,
+				"--ee-entry-state cannot be used with --replay-state-in; replay does not cross the ELF-entry owner seam.\n");
+			return false;
+		}
 
 		if (options->mem_sample_ee_trace &&
 			(options->ee_match_trace_path.empty() || options->output_path.empty() || options->mem_output_path.empty()))
@@ -1021,12 +1045,13 @@ namespace
 			return false;
 		}
 		if (options->recompiler_ee &&
-			(!options->output_path.empty() || !options->ee_match_trace_path.empty() ||
+			((!options->output_path.empty() && !options->ee_entry_state) ||
+			 !options->ee_match_trace_path.empty() ||
 			 !options->mem_output_path.empty() || options->mem_sample_ee_trace ||
 			 options->ee_after_sif_records != 0))
 		{
 			std::fprintf(stderr,
-				"--recompiler-ee is incompatible with EE pre-instruction trace modes; use CORE/SIF or other backend-neutral traces.\n");
+				"--recompiler-ee is incompatible with EE pre-instruction trace modes; use --ee-entry-state, CORE/SIF, or another backend-neutral trace.\n");
 			return false;
 		}
 		if (options->recompiler_vu && !options->vu_output_path.empty())
@@ -1628,6 +1653,15 @@ namespace
 			std::fprintf(stderr, "Failed to initialize headless config: %s\n", error.GetDescription().c_str());
 			return 2;
 		}
+		if (options.ee_entry_state)
+		{
+			std::fprintf(stdout,
+				"requested execution providers: ee=%s iop=%s vu0=%s vu1=%s\n",
+				options.recompiler_ee ? "recompiler" : "interpreter",
+				options.recompiler_iop ? "recompiler" : "interpreter",
+				options.recompiler_vu ? "recompiler" : "interpreter",
+				options.recompiler_vu ? "recompiler" : "interpreter");
+		}
 
 		if (!VMManager::Internal::CPUThreadInitialize())
 		{
@@ -1660,6 +1694,7 @@ namespace
 			trace_config.match_pc_only = options.ee_match_pc_only;
 			trace_config.defer_match_limit_until_mem_trace = options.mem_sample_ee_trace && !options.mem_output_path.empty();
 			trace_config.wait_for_elf_entry = options.wait_for_elf_entry;
+			trace_config.record_elf_entry_state = options.ee_entry_state;
 			if (!Pcsx2Trace::StartEeTrace(trace_config, &error))
 			{
 				std::fprintf(stderr, "Failed to start EE trace: %s\n", error.GetDescription().c_str());
@@ -2077,6 +2112,15 @@ namespace
 		}
 		Pcsx2Trace::SetCoreEventSchedulerCallback(nullptr);
 		s_machine_checkpoint_trace_enabled = false;
+		if (options.ee_entry_state)
+		{
+			std::fprintf(stdout,
+				"active execution providers: ee=%s iop=%s vu0=%s vu1=%s\n",
+				Cpu == &recCpu ? "recompiler" : "interpreter",
+				psxCpu == &psxRec ? "recompiler" : "interpreter",
+				CpuVU0 == &CpuMicroVU0 ? "recompiler" : "interpreter",
+				CpuVU1 == &CpuMicroVU1 ? "recompiler" : "interpreter");
+		}
 		bool replay_external_device_accesses_valid = true;
 		std::string replay_external_device_accesses_error;
 		if (!options.replay_state_input_path.empty())
@@ -2276,9 +2320,18 @@ namespace
 
 		if (ee_trace_started)
 		{
-			std::fprintf(stdout, "wrote %llu EE pre-instruction records to %s%s\n",
-				static_cast<unsigned long long>(ee_records), options.output_path.c_str(),
-				ee_hit_limit ? " (hit limit)" : "");
+			if (options.ee_entry_state)
+			{
+				std::fprintf(stdout, "wrote %llu EE ELF-entry state records to %s%s\n",
+					static_cast<unsigned long long>(ee_records), options.output_path.c_str(),
+					ee_hit_limit ? " (hit limit)" : "");
+			}
+			else
+			{
+				std::fprintf(stdout, "wrote %llu EE pre-instruction records to %s%s\n",
+					static_cast<unsigned long long>(ee_records), options.output_path.c_str(),
+					ee_hit_limit ? " (hit limit)" : "");
+			}
 		}
 		if (iop_trace_started)
 		{

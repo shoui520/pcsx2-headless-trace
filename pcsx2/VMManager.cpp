@@ -2960,6 +2960,9 @@ void VMManager::Internal::EntryPointCompilingOnCPUThread()
 	ClearCPUExecutionCaches();
 
 	R5900SymbolImporter.OnElfLoadedInMemory();
+	// Capture the final pre-first-instruction seam after settings, boot patches,
+	// memory-card visibility, and every provider cache reset are published.
+	Pcsx2Trace::RecordEeElfEntryState(s_elf_entry_point);
 }
 
 void VMManager::Internal::VSyncOnCPUThread()

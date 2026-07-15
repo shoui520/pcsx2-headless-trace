@@ -26,6 +26,10 @@ namespace Pcsx2Trace
 		bool match_pc_only = false;
 		bool defer_match_limit_until_mem_trace = false;
 		bool wait_for_elf_entry = true;
+		// Write one complete EE trace-schema record at the common ELF-entry seam.
+		// This does not require an interpreter pre-instruction hook and is
+		// therefore valid with the EE recompiler.
+		bool record_elf_entry_state = false;
 	};
 
 	bool StartEeTrace(const EeTraceConfig& config, Error* error = nullptr);
@@ -35,6 +39,7 @@ namespace Pcsx2Trace
 	void SetEePreInstructionCallback(EePreInstructionCallback callback);
 	bool RecordEePreInstruction(u32 pc, u32 opcode);
 	void NotifyEeElfEntry(u32 pc);
+	void RecordEeElfEntryState(u32 pc);
 	bool DidEeTraceRecordLastInstruction();
 	bool ShouldEeTraceStopAfterMemTrace();
 

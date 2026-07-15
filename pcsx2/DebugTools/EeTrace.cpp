@@ -4,6 +4,7 @@
 #include "DebugTools/EeTrace.h"
 
 #include "DebugTools/SifTrace.h"
+#include "Memory.h"
 #include "R5900.h"
 
 #include "common/Error.h"
@@ -25,6 +26,7 @@ namespace Pcsx2Trace
 		static constexpr std::array<char, 8> TRACE_MAGIC = {'P', 'C', 'S', 'X', '2', 'E', 'E', 'T'};
 		static constexpr u32 TRACE_VERSION = 1;
 		static constexpr u32 TRACE_FLAG_WAITED_FOR_ELF_ENTRY = 1u << 0;
+		static constexpr u32 TRACE_FLAG_RECORDED_ELF_ENTRY_STATE = 1u << 1;
 		static constexpr u32 TIMING_DERIVED_CP0_COUNT = 9;
 
 		struct EeTraceFileHeader
@@ -59,6 +61,8 @@ namespace Pcsx2Trace
 			u32 hi[4];
 			u32 lo[4];
 		};
+		static_assert(sizeof(EeTraceFileHeader) == 48);
+		static_assert(sizeof(EeTraceRecord) == 976);
 
 		FILE* s_trace_file = nullptr;
 		EeTraceConfig s_config;
@@ -71,7 +75,10 @@ namespace Pcsx2Trace
 		bool s_hit_limit = false;
 		bool s_last_instruction_recorded = false;
 		bool s_deferred_match_limit = false;
+		bool s_entry_pre_instruction_pending = false;
+		bool s_entry_state_recorded = false;
 		u32 s_entry_pc = 0;
+		u32 s_entry_opcode = 0;
 		std::string s_error;
 
 		EeTraceFileHeader MakeHeader()
@@ -81,7 +88,9 @@ namespace Pcsx2Trace
 			header.version = TRACE_VERSION;
 			header.header_size = sizeof(EeTraceFileHeader);
 			header.record_size = sizeof(EeTraceRecord);
-			header.flags = s_config.wait_for_elf_entry ? TRACE_FLAG_WAITED_FOR_ELF_ENTRY : 0;
+			header.flags =
+				(s_config.wait_for_elf_entry ? TRACE_FLAG_WAITED_FOR_ELF_ENTRY : 0) |
+				(s_entry_state_recorded ? TRACE_FLAG_RECORDED_ELF_ENTRY_STATE : 0);
 			header.max_records = s_config.max_records;
 			header.records_written = s_records_written;
 			header.entry_pc = s_entry_pc;
@@ -254,6 +263,15 @@ namespace Pcsx2Trace
 			Error::SetStringView(error, "Trace output path is empty.");
 			return false;
 		}
+		if (config.record_elf_entry_state &&
+			(!config.wait_for_elf_entry || config.skip_records != 0 ||
+			 config.max_instruction_records != 0 || config.after_sif_records != 0 ||
+			 !config.match_trace_path.empty()))
+		{
+			Error::SetStringView(error,
+				"ELF-entry EE state capture requires an ungated wait-for-entry trace without matching or skipping.");
+			return false;
+		}
 
 		const std::string output_directory(Path::GetDirectory(config.output_path));
 		if (!output_directory.empty() && !FileSystem::EnsureDirectoryExists(output_directory.c_str(), false, error))
@@ -276,7 +294,10 @@ namespace Pcsx2Trace
 		s_hit_limit = false;
 		s_last_instruction_recorded = false;
 		s_deferred_match_limit = false;
+		s_entry_pre_instruction_pending = false;
+		s_entry_state_recorded = false;
 		s_entry_pc = 0;
+		s_entry_opcode = 0;
 		s_error.clear();
 
 		if (!s_config.match_trace_path.empty() && !LoadMatchTrace(s_config.match_trace_path, error))
@@ -326,6 +347,20 @@ namespace Pcsx2Trace
 		s_last_instruction_recorded = false;
 		if (!IsEeTraceEnabled())
 			return false;
+		if (s_entry_pre_instruction_pending)
+		{
+			s_entry_pre_instruction_pending = false;
+			if (pc != s_entry_pc || opcode != s_entry_opcode)
+			{
+				SetError("The first EE pre-instruction hook did not match the captured ELF entry.");
+				s_hit_limit = true;
+				return true;
+			}
+
+			// RecordEeElfEntryState() already wrote this exact boundary.
+			s_last_instruction_recorded = true;
+			return s_hit_limit;
+		}
 		if (s_config.after_sif_records != 0 &&
 			GetSifTraceRecordsWritten() < s_config.after_sif_records)
 		{
@@ -423,6 +458,31 @@ namespace Pcsx2Trace
 
 		s_entry_pc = pc;
 		s_started = true;
+	}
+
+	void RecordEeElfEntryState(u32 pc)
+	{
+		if (!s_trace_file || !s_config.record_elf_entry_state)
+			return;
+		if (!s_started || s_records_written != 0 || pc != s_entry_pc)
+		{
+			SetError("The EE ELF-entry state was captured outside its owner boundary.");
+			s_hit_limit = true;
+			return;
+		}
+
+		s_entry_opcode = memRead32(pc);
+		EeTraceRecord record = {};
+		CaptureRecord(record, 0, pc, s_entry_opcode);
+		if (!WriteRecord(record))
+			return;
+		s_entry_state_recorded = true;
+
+		s_instruction_records_seen = 1;
+		s_records_seen = 1;
+		s_entry_pre_instruction_pending = true;
+		if (s_config.max_records != 0 && s_records_written >= s_config.max_records)
+			s_hit_limit = true;
 	}
 
 	bool DidEeTraceRecordLastInstruction()
