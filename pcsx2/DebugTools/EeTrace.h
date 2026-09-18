@@ -26,6 +26,9 @@ namespace Pcsx2Trace
 		bool match_pc_only = false;
 		bool defer_match_limit_until_mem_trace = false;
 		bool wait_for_elf_entry = true;
+		// Opt-in Region IR oracle schema. Ordinary EE traces retain the compact
+		// version-1 layout used by the cross-host execution validators.
+		bool capture_vu0_state = false;
 		// Write one complete EE trace-schema record at the common ELF-entry seam.
 		// This does not require an interpreter pre-instruction hook and is
 		// therefore valid with the EE recompiler.

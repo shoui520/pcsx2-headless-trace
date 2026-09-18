@@ -14,9 +14,11 @@
 #include "IopCounters.h"
 #include "IopMem.h"
 #include "Memory.h"
+#include "MTGS.h"
 #include "R3000A.h"
 #include "R5900.h"
 #include "SPU2/defs.h"
+#include "SPU2/spu2.h"
 #include "Sif.h"
 #include "VUmicro.h"
 #include "Vif.h"
@@ -46,6 +48,7 @@ namespace Pcsx2Trace
 		static constexpr u32 TRACE_FLAG_GATED_ON_VSYNC_FRAMES = 1u << 3;
 		static constexpr u32 CHECKPOINT_TRIGGER_VU1_COMPLETED_EVENT_TEST = 1;
 		static constexpr u32 CHECKPOINT_TRIGGER_PORTABLE_REPLAY_START = 2;
+		static constexpr u32 CHECKPOINT_TRIGGER_VSYNC_EVENT_TEST = 3;
 		static constexpr u64 FNV1A64_OFFSET = 14695981039346656037ull;
 		static constexpr u64 FNV1A64_PRIME = 1099511628211ull;
 
@@ -835,6 +838,10 @@ namespace Pcsx2Trace
 
 		void CaptureRecord(MachineCheckpointTraceRecord& record, u32 trigger)
 		{
+			// SPU2 sample RAM and engine state are part of this architectural
+			// projection. Materialize every sample due at the captured IOP cycle
+			// before hashing either one.
+			TimeUpdate(psxRegs.cycle);
 			record = {};
 			record.index = s_records_written;
 			record.vu1_completion_ordinal = s_last_completion_ordinal;
@@ -1088,6 +1095,8 @@ namespace Pcsx2Trace
 		const u64 completion_ordinal = s_vu1_completions_seen++;
 		const u64 completed_vsync_frames =
 			static_cast<u32>(g_FrameCount - s_trace_start_vsync_frame);
+		if (s_config.after_vsync_frames != 0)
+			return;
 		if (GetSifTraceRecordsWritten() < s_config.after_sif_records ||
 			GetVifTraceRecordsWritten() < s_config.after_vif_records ||
 			completed_vsync_frames < s_config.after_vsync_frames)
@@ -1113,15 +1122,32 @@ namespace Pcsx2Trace
 
 	bool RecordPendingMachineCheckpointAtEventTest()
 	{
-		if (!IsMachineCheckpointTraceEnabled() || !s_pending_checkpoint)
+		if (!IsMachineCheckpointTraceEnabled())
 			return s_hit_limit;
+		const u64 completed_vsync_frames =
+			static_cast<u32>(g_FrameCount - s_trace_start_vsync_frame);
+		const bool vsync_checkpoint = s_config.after_vsync_frames != 0 &&
+			completed_vsync_frames >= s_config.after_vsync_frames &&
+			GetSifTraceRecordsWritten() >= s_config.after_sif_records &&
+			GetVifTraceRecordsWritten() >= s_config.after_vif_records;
+		if (!vsync_checkpoint && !s_pending_checkpoint)
+			return false;
 		// A completed VU1 program can overlap an active VU0 program or be followed
 		// by another MSCAL in the same EE event test. Preserve the pending marker
 		// and emit only at the first shared event seam where both VUs are idle.
 		// Provider-private branch/backup state is then non-continuation residue.
 		if ((VU0.VI[REG_VPU_STAT].UL & 0x101) != 0)
 			return false;
-		const bool wrote = WriteCurrentRecord(CHECKPOINT_TRIGGER_VU1_COMPLETED_EVENT_TEST);
+		MTGS::WaitGS(false);
+		if (vsync_checkpoint)
+		{
+			s_last_completion_ordinal = s_vu1_completions_seen;
+			s_pending_completion_count = 0;
+			s_trigger_vsync_frame = g_FrameCount;
+		}
+		const bool wrote = WriteCurrentRecord(vsync_checkpoint ?
+			CHECKPOINT_TRIGGER_VSYNC_EVENT_TEST :
+			CHECKPOINT_TRIGGER_VU1_COMPLETED_EVENT_TEST);
 		s_pending_checkpoint = false;
 		s_pending_completion_count = 0;
 		if (!wrote)

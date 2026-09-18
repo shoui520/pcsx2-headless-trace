@@ -80,10 +80,8 @@ namespace Pcsx2Trace
 		u64 skip_records = 0;
 		u64 after_sif_records = 0;
 		u64 after_vif_records = 0;
-		// Gate eligible VU1 completions until this many VSyncEnd transitions
-		// have completed since the trace became active (normally ELF entry).
-		// This is a temporal gate; workload progress must be corroborated by the
-		// captured architectural, VU, device, and memory state.
+		// Snapshot at the first shared EE event seam after this many VSyncEnd
+		// transitions since trace activation.
 		u64 after_vsync_frames = 0;
 		bool wait_for_elf_entry = true;
 	};

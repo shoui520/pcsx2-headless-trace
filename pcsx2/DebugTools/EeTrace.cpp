@@ -6,6 +6,7 @@
 #include "DebugTools/SifTrace.h"
 #include "Memory.h"
 #include "R5900.h"
+#include "VU.h"
 
 #include "common/Error.h"
 #include "common/FileSystem.h"
@@ -25,6 +26,7 @@ namespace Pcsx2Trace
 		EePreInstructionCallback s_pre_instruction_callback = nullptr;
 		static constexpr std::array<char, 8> TRACE_MAGIC = {'P', 'C', 'S', 'X', '2', 'E', 'E', 'T'};
 		static constexpr u32 TRACE_VERSION = 1;
+		static constexpr u32 TRACE_VU0_VERSION = 3;
 		static constexpr u32 TRACE_FLAG_WAITED_FOR_ELF_ENTRY = 1u << 0;
 		static constexpr u32 TRACE_FLAG_RECORDED_ELF_ENTRY_STATE = 1u << 1;
 		static constexpr u32 TIMING_DERIVED_CP0_COUNT = 9;
@@ -64,6 +66,22 @@ namespace Pcsx2Trace
 		static_assert(sizeof(EeTraceFileHeader) == 48);
 		static_assert(sizeof(EeTraceRecord) == 976);
 
+		struct EeTraceVu0Record
+		{
+			EeTraceRecord ee;
+			u32 vu0_vf[32][4];
+			u32 vu0_acc[4];
+			u32 vu0_macflag;
+			u32 vu0_statusflag;
+			u32 vu0_vi_mac;
+			u32 vu0_vi_status;
+			u32 vu0_vpu_stat;
+			u32 reserved;
+			u32 vu0_q;
+			u32 vu0_vi_q;
+		};
+		static_assert(sizeof(EeTraceVu0Record) == 1536);
+
 		FILE* s_trace_file = nullptr;
 		EeTraceConfig s_config;
 		std::vector<EeTraceRecord> s_match_records;
@@ -85,9 +103,10 @@ namespace Pcsx2Trace
 		{
 			EeTraceFileHeader header = {};
 			std::memcpy(header.magic, TRACE_MAGIC.data(), TRACE_MAGIC.size());
-			header.version = TRACE_VERSION;
+			header.version = s_config.capture_vu0_state ? TRACE_VU0_VERSION : TRACE_VERSION;
 			header.header_size = sizeof(EeTraceFileHeader);
-			header.record_size = sizeof(EeTraceRecord);
+			header.record_size = s_config.capture_vu0_state ?
+				sizeof(EeTraceVu0Record) : sizeof(EeTraceRecord);
 			header.flags =
 				(s_config.wait_for_elf_entry ? TRACE_FLAG_WAITED_FOR_ELF_ENTRY : 0) |
 				(s_entry_state_recorded ? TRACE_FLAG_RECORDED_ELF_ENTRY_STATE : 0);
@@ -143,6 +162,31 @@ namespace Pcsx2Trace
 			CaptureGpr(record.lo, cpuRegs.LO);
 		}
 
+		void CaptureVu0State(EeTraceVu0Record& record)
+		{
+			for (u32 vf = 0; vf < 32; vf++)
+			{
+				for (u32 lane = 0; lane < 4; lane++)
+					record.vu0_vf[vf][lane] = VU0.VF[vf].UL[lane];
+			}
+			for (u32 lane = 0; lane < 4; lane++)
+				record.vu0_acc[lane] = VU0.ACC.UL[lane];
+			record.vu0_macflag = VU0.macflag;
+			record.vu0_statusflag = VU0.statusflag;
+			record.vu0_vi_mac = VU0.VI[REG_MAC_FLAG].UL;
+			record.vu0_vi_status = VU0.VI[REG_STATUS_FLAG].UL;
+			record.vu0_vpu_stat = VU0.VI[REG_VPU_STAT].UL;
+			record.vu0_q = VU0.q.UL;
+			record.vu0_vi_q = VU0.VI[REG_Q].UL;
+		}
+
+		void CaptureVu0Record(EeTraceVu0Record& record, u64 index, u32 pc, u32 opcode)
+		{
+			record = {};
+			CaptureRecord(record.ee, index, pc, opcode);
+			CaptureVu0State(record);
+		}
+
 		bool WriteRecord(const EeTraceRecord& record)
 		{
 			if (std::fwrite(&record, sizeof(record), 1, s_trace_file) != 1)
@@ -154,6 +198,32 @@ namespace Pcsx2Trace
 
 			s_records_written++;
 			return true;
+		}
+
+		bool CaptureAndWriteRecord(u64 index, u32 pc, u32 opcode,
+			EeTraceRecord* captured_ee = nullptr)
+		{
+			if (s_config.capture_vu0_state)
+			{
+				EeTraceVu0Record record = {};
+				CaptureVu0Record(record, index, pc, opcode);
+				if (captured_ee)
+					*captured_ee = record.ee;
+				if (std::fwrite(&record, sizeof(record), 1, s_trace_file) != 1)
+				{
+					SetError("Failed to write EE+VU0 trace record.");
+					s_hit_limit = true;
+					return false;
+				}
+				s_records_written++;
+				return true;
+			}
+
+			EeTraceRecord record = {};
+			CaptureRecord(record, index, pc, opcode);
+			if (captured_ee)
+				*captured_ee = record;
+			return WriteRecord(record);
 		}
 
 		bool RecordsMatchBoundaryTarget(const EeTraceRecord& current, const EeTraceRecord& target)
@@ -272,7 +342,6 @@ namespace Pcsx2Trace
 				"ELF-entry EE state capture requires an ungated wait-for-entry trace without matching or skipping.");
 			return false;
 		}
-
 		const std::string output_directory(Path::GetDirectory(config.output_path));
 		if (!output_directory.empty() && !FileSystem::EnsureDirectoryExists(output_directory.c_str(), false, error))
 			return false;
@@ -397,8 +466,23 @@ namespace Pcsx2Trace
 				return false;
 			}
 
-			if (!WriteRecord(record))
+			if (s_config.capture_vu0_state)
+			{
+				EeTraceVu0Record vu0_record = {};
+				vu0_record.ee = record;
+				CaptureVu0State(vu0_record);
+				if (std::fwrite(&vu0_record, sizeof(vu0_record), 1, s_trace_file) != 1)
+				{
+					SetError("Failed to write matched EE+VU0 trace record.");
+					s_hit_limit = true;
+					return true;
+				}
+				s_records_written++;
+			}
+			else if (!WriteRecord(record))
+			{
 				return true;
+			}
 
 			s_last_instruction_recorded = true;
 			s_match_index++;
@@ -435,9 +519,7 @@ namespace Pcsx2Trace
 			return true;
 		}
 
-		EeTraceRecord record = {};
-		CaptureRecord(record, s_records_seen, pc, opcode);
-		if (!WriteRecord(record))
+		if (!CaptureAndWriteRecord(s_records_seen, pc, opcode))
 			return true;
 
 		s_last_instruction_recorded = true;
@@ -472,9 +554,7 @@ namespace Pcsx2Trace
 		}
 
 		s_entry_opcode = memRead32(pc);
-		EeTraceRecord record = {};
-		CaptureRecord(record, 0, pc, s_entry_opcode);
-		if (!WriteRecord(record))
+		if (!CaptureAndWriteRecord(0, pc, s_entry_opcode))
 			return;
 		s_entry_state_recorded = true;
 

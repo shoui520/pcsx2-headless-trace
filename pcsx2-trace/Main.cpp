@@ -3,6 +3,7 @@
 
 #include "pcsx2/CDVD/CDVDcommon.h"
 #include "pcsx2/Config.h"
+#include "pcsx2/Counters.h"
 #include "pcsx2/DebugTools/CoreEventTrace.h"
 #include "pcsx2/DebugTools/EeTrace.h"
 #include "pcsx2/DebugTools/GsTrace.h"
@@ -42,6 +43,16 @@ namespace
 {
 	static constexpr u64 DEFAULT_MAX_INSTRUCTIONS = 100000;
 	static constexpr u64 MAX_IOP_DUMP_SIZE = 1024 * 1024;
+	static constexpr u32 DEFAULT_PAD_AUTO_FIRE_PRESSED_FRAMES = 2;
+	static constexpr u32 DEFAULT_PAD_AUTO_FIRE_RELEASED_FRAMES = 6;
+	static constexpr u32 MAX_PAD_AUTO_FIRE_CADENCE_FRAMES = 600;
+
+	enum class PadAutoFireButton : u8
+	{
+		None,
+		Cross,
+		Circle,
+	};
 
 	struct TraceOptions
 	{
@@ -60,6 +71,7 @@ namespace
 		std::string spu2_output_path;
 		std::string vif_output_path;
 		std::string vu_output_path;
+		std::string pcsx2_state_input_path;
 		std::string replay_state_input_path;
 		std::string replay_state_output_path;
 		std::string gs_debug_dump_directory;
@@ -100,8 +112,12 @@ namespace
 		u64 iop_dump_size = 0;
 		u32 mem_region_mask = Pcsx2Trace::MemTraceDefaultRegionMask;
 		u32 vu_unit_mask = Pcsx2Trace::VuTraceUnitMaskBoth;
+		u32 pad_auto_fire_pressed_frames = DEFAULT_PAD_AUTO_FIRE_PRESSED_FRAMES;
+		u32 pad_auto_fire_released_frames = DEFAULT_PAD_AUTO_FIRE_RELEASED_FRAMES;
+		PadAutoFireButton pad_auto_fire_button = PadAutoFireButton::None;
 		bool wait_for_elf_entry = true;
 		bool ee_entry_state = false;
+		bool ee_vu0_state = false;
 		bool ee_match_ignore_timing_state = false;
 		bool ee_match_pc_only = false;
 		bool mem_sample_ee_trace = false;
@@ -120,6 +136,7 @@ namespace
 		bool max_core_event_records_overridden = false;
 		bool max_spu2_records_overridden = false;
 		bool max_vu_records_overridden = false;
+		bool pad1_dualshock2 = false;
 		bool pad_pulse_script = false;
 		bool recompiler_ee = false;
 		bool recompiler_iop = false;
@@ -133,6 +150,15 @@ namespace
 	u64 s_pad_script_entry_cycle = 0;
 	u32 s_pad_script_state = 0;
 	bool s_pad_pulse_script_enabled = false;
+	PadAutoFireButton s_pad_auto_fire_button = PadAutoFireButton::None;
+	u32 s_pad_auto_fire_pressed_frames = DEFAULT_PAD_AUTO_FIRE_PRESSED_FRAMES;
+	u32 s_pad_auto_fire_released_frames = DEFAULT_PAD_AUTO_FIRE_RELEASED_FRAMES;
+	u32 s_pad_auto_fire_entry_frame = 0;
+	u32 s_pad_auto_fire_last_frame = 0;
+	u32 s_pad_auto_fire_press_edges = 0;
+	u32 s_pad_auto_fire_release_edges = 0;
+	bool s_pad_auto_fire_initialized = false;
+	bool s_pad_auto_fire_pressed = false;
 	bool s_stop_after_sif_limit = false;
 	bool s_machine_checkpoint_trace_enabled = false;
 
@@ -156,24 +182,64 @@ namespace
 			return;
 		}
 
-		if (!s_pad_pulse_script_enabled || !VMManager::Internal::HasBootedELF())
-			return;
-		if (s_pad_script_entry_cycle == 0)
-			s_pad_script_entry_cycle = cpuRegs.cycle;
-
-		static constexpr u64 EE_CYCLES_PER_SECOND = 294912000;
-		static constexpr u64 PERIOD = EE_CYCLES_PER_SECOND * 2;
-		static constexpr u64 PULSE = EE_CYCLES_PER_SECOND / 5;
-		const u64 elapsed = cpuRegs.cycle - s_pad_script_entry_cycle;
-		const u64 event = elapsed / PERIOD;
-		const bool pressed = (elapsed % PERIOD) < PULSE;
-		const u32 state = pressed ? ((event & 1) ? 2u : 1u) : 0u;
-		if (state == s_pad_script_state)
+		if (!VMManager::Internal::HasBootedELF())
 			return;
 
-		s_pad_script_state = state;
-		Pad::SetControllerState(0, PadDualshock2::Inputs::PAD_START, state == 1 ? 1.0f : 0.0f);
-		Pad::SetControllerState(0, PadDualshock2::Inputs::PAD_CROSS, state == 2 ? 1.0f : 0.0f);
+		if (s_pad_pulse_script_enabled)
+		{
+			if (s_pad_script_entry_cycle == 0)
+				s_pad_script_entry_cycle = cpuRegs.cycle;
+
+			static constexpr u64 EE_CYCLES_PER_SECOND = 294912000;
+			static constexpr u64 PERIOD = EE_CYCLES_PER_SECOND * 2;
+			static constexpr u64 PULSE = EE_CYCLES_PER_SECOND / 5;
+			const u64 elapsed = cpuRegs.cycle - s_pad_script_entry_cycle;
+			const u64 event = elapsed / PERIOD;
+			const bool pressed = (elapsed % PERIOD) < PULSE;
+			const u32 state = pressed ? ((event & 1) ? 2u : 1u) : 0u;
+			if (state != s_pad_script_state)
+			{
+				s_pad_script_state = state;
+				Pad::SetControllerState(0, PadDualshock2::Inputs::PAD_START, state == 1 ? 1.0f : 0.0f);
+				Pad::SetControllerState(0, PadDualshock2::Inputs::PAD_CROSS, state == 2 ? 1.0f : 0.0f);
+			}
+		}
+
+		if (s_pad_auto_fire_button == PadAutoFireButton::None)
+			return;
+		if (!s_pad_auto_fire_initialized)
+		{
+			s_pad_auto_fire_entry_frame = g_FrameCount;
+			s_pad_auto_fire_last_frame = g_FrameCount;
+			s_pad_auto_fire_initialized = true;
+		}
+		else if (s_pad_auto_fire_last_frame == g_FrameCount)
+		{
+			return;
+		}
+		else
+		{
+			s_pad_auto_fire_last_frame = g_FrameCount;
+		}
+
+		const u32 period =
+			s_pad_auto_fire_pressed_frames + s_pad_auto_fire_released_frames;
+		const u32 phase = (g_FrameCount - s_pad_auto_fire_entry_frame) % period;
+		const bool pressed = phase < s_pad_auto_fire_pressed_frames;
+		if (pressed == s_pad_auto_fire_pressed &&
+			(s_pad_auto_fire_press_edges != 0 || s_pad_auto_fire_release_edges != 0))
+		{
+			return;
+		}
+
+		s_pad_auto_fire_pressed = pressed;
+		const u32 input = s_pad_auto_fire_button == PadAutoFireButton::Cross ?
+			PadDualshock2::Inputs::PAD_CROSS : PadDualshock2::Inputs::PAD_CIRCLE;
+		Pad::SetControllerState(0, input, pressed ? 1.0f : 0.0f);
+		if (pressed)
+			s_pad_auto_fire_press_edges++;
+		else
+			s_pad_auto_fire_release_edges++;
 	}
 
 	void PrintUsage(const char* program)
@@ -187,6 +253,7 @@ namespace
 			"  --full-boot           Disable PCSX2 fast boot for --boot-disc.\n"
 			"  --out trace.bin       Write an EE/R5900 pre-instruction trace.\n"
 			"  --ee-entry-state      Write one complete EE trace-schema state record at ELF entry; valid with recompilers.\n"
+			"  --ee-vu0-state        Add byte-exact VU0 architectural state to each EE trace record.\n"
 			"  --ee-match-trace trace.bin\n"
 			"                         Write only EE records matching this trace, scanning up to --max-instructions.\n"
 			"  --ee-match-ignore-timing-state\n"
@@ -208,13 +275,21 @@ namespace
 			"  --spu2-out trace.bin  Write SPU2 48 kHz mixer output records.\n"
 			"  --vif-out trace.bin   Write VIF command and unpack effect records.\n"
 			"  --vu-out trace.bin    Write VU0/VU1 interpreter micro-step records.\n"
+			"  --pcsx2-state-in state.p2s\n"
+			"                         Load an ordinary same-build PCSX2 savestate during VM initialization.\n"
 			"  --replay-state-in state.pcsx2raw\n"
 			"                         Load a validated PCSX2 named-entry state after VM initialization.\n"
 			"  --replay-state-out state.pcsx2raw\n"
 			"                         Save a validated named-entry state at the terminal machine checkpoint.\n"
 			"  --replay-state-checkpoint-start\n"
 			"                         Record the loaded state before the first guest instruction.\n"
+			"  --pad1-dualshock2     Keep a neutral DualShock 2 connected in port 1.\n"
 			"  --pad-pulse-script    Alternate deterministic EE-cycle START/CROSS pulses after ELF entry.\n"
+			"  --pad-autofire BUTTON Repeatedly press and release Cross or Circle after ELF entry.\n"
+			"  --pad-autofire-pressed-frames N\n"
+			"                         Keep each autofire press active for N guest frames (default: 2).\n"
+			"  --pad-autofire-released-frames N\n"
+			"                         Keep each autofire release active for N guest frames (default: 6).\n"
 			"  --recompiler-ee       Run the native EE recompiler (CORE/SIF traces do not require EE instruction hooks).\n"
 			"  --recompiler-iop      Run the native IOP recompiler.\n"
 			"  --recompiler-vu       Run the native microVU0 and microVU1 recompilers with MTVU disabled.\n"
@@ -306,6 +381,30 @@ namespace
 				return false;
 		}
 		return true;
+	}
+
+	bool ParsePadAutoFireButton(std::string_view text, PadAutoFireButton* button)
+	{
+		if (MemRegionNameMatches(text, "cross"))
+			*button = PadAutoFireButton::Cross;
+		else if (MemRegionNameMatches(text, "circle"))
+			*button = PadAutoFireButton::Circle;
+		else
+			return false;
+		return true;
+	}
+
+	const char* PadAutoFireButtonName(PadAutoFireButton button)
+	{
+		switch (button)
+		{
+			case PadAutoFireButton::Cross:
+				return "Cross";
+			case PadAutoFireButton::Circle:
+				return "Circle";
+			default:
+				return "None";
+		}
 	}
 
 	bool ParseMemRegionMask(std::string_view text, u32* mask)
@@ -432,6 +531,10 @@ namespace
 			{
 				options->ee_entry_state = true;
 			}
+			else if (arg == "--ee-vu0-state")
+			{
+				options->ee_vu0_state = true;
+			}
 			else if (arg == "--ee-match-trace")
 			{
 				if (++i >= argc)
@@ -552,6 +655,15 @@ namespace
 				}
 				options->vu_output_path = argv[i];
 			}
+			else if (arg == "--pcsx2-state-in")
+			{
+				if (++i >= argc)
+				{
+					std::fprintf(stderr, "--pcsx2-state-in requires a path.\n");
+					return false;
+				}
+				options->pcsx2_state_input_path = argv[i];
+			}
 			else if (arg == "--replay-state-in")
 			{
 				if (++i >= argc)
@@ -574,9 +686,48 @@ namespace
 			{
 				options->replay_state_checkpoint_start = true;
 			}
+			else if (arg == "--pad1-dualshock2")
+			{
+				options->pad1_dualshock2 = true;
+			}
 			else if (arg == "--pad-pulse-script")
 			{
 				options->pad_pulse_script = true;
+			}
+			else if (arg == "--pad-autofire")
+			{
+				if (++i >= argc ||
+					!ParsePadAutoFireButton(argv[i], &options->pad_auto_fire_button))
+				{
+					std::fprintf(stderr, "--pad-autofire requires Cross or Circle.\n");
+					return false;
+				}
+			}
+			else if (arg == "--pad-autofire-pressed-frames")
+			{
+				u64 value = 0;
+				if (++i >= argc || !ParseU64(argv[i], &value) || value == 0 ||
+					value > MAX_PAD_AUTO_FIRE_CADENCE_FRAMES)
+				{
+					std::fprintf(stderr,
+						"--pad-autofire-pressed-frames requires an integer from 1 to %u.\n",
+						MAX_PAD_AUTO_FIRE_CADENCE_FRAMES);
+					return false;
+				}
+				options->pad_auto_fire_pressed_frames = static_cast<u32>(value);
+			}
+			else if (arg == "--pad-autofire-released-frames")
+			{
+				u64 value = 0;
+				if (++i >= argc || !ParseU64(argv[i], &value) || value == 0 ||
+					value > MAX_PAD_AUTO_FIRE_CADENCE_FRAMES)
+				{
+					std::fprintf(stderr,
+						"--pad-autofire-released-frames requires an integer from 1 to %u.\n",
+						MAX_PAD_AUTO_FIRE_CADENCE_FRAMES);
+					return false;
+				}
+				options->pad_auto_fire_released_frames = static_cast<u32>(value);
 			}
 			else if (arg == "--recompiler-ee")
 			{
@@ -972,6 +1123,13 @@ namespace
 				return false;
 			}
 		}
+		if (options->pad_pulse_script &&
+			options->pad_auto_fire_button != PadAutoFireButton::None)
+		{
+			std::fprintf(stderr,
+				"--pad-pulse-script and --pad-autofire are mutually exclusive.\n");
+			return false;
+		}
 
 		if (options->boot_bios_only && options->boot_disc)
 		{
@@ -1016,6 +1174,11 @@ namespace
 			std::fprintf(stderr, "--ee-match-trace requires --out.\n");
 			return false;
 		}
+		if (options->ee_vu0_state && options->output_path.empty())
+		{
+			std::fprintf(stderr, "--ee-vu0-state requires --out.\n");
+			return false;
+		}
 		if (options->ee_match_pc_only && options->ee_match_trace_path.empty())
 		{
 			std::fprintf(stderr, "--ee-match-pc-only requires --ee-match-trace.\n");
@@ -1031,10 +1194,12 @@ namespace
 				"--ee-entry-state requires --out, --trace-from entry, --max-instructions 1, and no EE matching, skipping, SIF gate, or sampled MEM trace.\n");
 			return false;
 		}
-		if (options->ee_entry_state && !options->replay_state_input_path.empty())
+		if (options->ee_entry_state &&
+			(!options->pcsx2_state_input_path.empty() ||
+			 !options->replay_state_input_path.empty()))
 		{
 			std::fprintf(stderr,
-				"--ee-entry-state cannot be used with --replay-state-in; replay does not cross the ELF-entry owner seam.\n");
+				"--ee-entry-state cannot be used with a restored-state input; state restore does not cross the ELF-entry owner seam.\n");
 			return false;
 		}
 
@@ -1086,6 +1251,20 @@ namespace
 				"--replay-state-out requires nonzero --machine-checkpoint-max.\n");
 			return false;
 		}
+		if (!options->pcsx2_state_input_path.empty() &&
+			!options->replay_state_input_path.empty())
+		{
+			std::fprintf(stderr,
+				"--pcsx2-state-in and --replay-state-in are mutually exclusive.\n");
+			return false;
+		}
+		if (!options->pcsx2_state_input_path.empty() &&
+			!FileSystem::FileExists(options->pcsx2_state_input_path.c_str()))
+		{
+			std::fprintf(stderr, "PCSX2 savestate does not exist: %s\n",
+				options->pcsx2_state_input_path.c_str());
+			return false;
+		}
 		if (!options->replay_state_input_path.empty() &&
 			!FileSystem::FileExists(options->replay_state_input_path.c_str()))
 		{
@@ -1093,18 +1272,21 @@ namespace
 				options->replay_state_input_path.c_str());
 			return false;
 		}
-		if (!options->replay_state_input_path.empty() && !options->wait_for_elf_entry)
+		if ((!options->pcsx2_state_input_path.empty() ||
+			 !options->replay_state_input_path.empty()) &&
+			!options->wait_for_elf_entry)
 		{
 			std::fprintf(stderr,
-				"--replay-state-in requires --trace-from entry so initialization cannot enter the replay trace.\n");
+				"Restored-state input requires --trace-from entry so initialization cannot enter the trace.\n");
 			return false;
 		}
 		if (options->replay_state_checkpoint_start &&
-			(options->replay_state_input_path.empty() ||
+			((options->pcsx2_state_input_path.empty() &&
+			  options->replay_state_input_path.empty()) ||
 			 options->machine_checkpoint_output_path.empty()))
 		{
 			std::fprintf(stderr,
-				"--replay-state-checkpoint-start requires --replay-state-in and --machine-checkpoint-out.\n");
+				"--replay-state-checkpoint-start requires --pcsx2-state-in or --replay-state-in, and --machine-checkpoint-out.\n");
 			return false;
 		}
 		if (!options->replay_state_input_path.empty() &&
@@ -1131,6 +1313,8 @@ namespace
 		}};
 		const std::string replay_input_normalized =
 			normalize_path(options->replay_state_input_path);
+		const std::string pcsx2_input_normalized =
+			normalize_path(options->pcsx2_state_input_path);
 		const std::string replay_output_normalized =
 			normalize_path(options->replay_state_output_path);
 		if (!replay_input_normalized.empty() &&
@@ -1141,6 +1325,14 @@ namespace
 		}
 		for (const std::string* artifact : writable_artifacts)
 		{
+			if (!pcsx2_input_normalized.empty() && !artifact->empty() &&
+				pcsx2_input_normalized == normalize_path(*artifact))
+			{
+				std::fprintf(stderr,
+					"PCSX2 savestate input aliases a writable trace artifact: %s\n",
+					artifact->c_str());
+				return false;
+			}
 			if (!replay_input_normalized.empty() && !artifact->empty() &&
 				replay_input_normalized == normalize_path(*artifact))
 			{
@@ -1159,8 +1351,9 @@ namespace
 			}
 		}
 		for (const std::string* protected_input :
-			std::array<const std::string*, 3>{{
-				&options->bios_path, &options->elf_path, &options->ee_match_trace_path}})
+			std::array<const std::string*, 4>{{
+				&options->bios_path, &options->elf_path, &options->ee_match_trace_path,
+				&options->pcsx2_state_input_path}})
 		{
 			if (!replay_output_normalized.empty() && !protected_input->empty() &&
 				replay_output_normalized == normalize_path(*protected_input))
@@ -1381,7 +1574,10 @@ namespace
 		{
 			const std::string section = Pad::GetConfigSection(i);
 			si.SetStringValue(section.c_str(), "Type",
-				(options.pad_pulse_script && i == 0) ? ds2_pad_type : disconnected_pad_type);
+				((options.pad1_dualshock2 || options.pad_pulse_script ||
+					options.pad_auto_fire_button != PadAutoFireButton::None) &&
+					i == 0) ?
+					ds2_pad_type : disconnected_pad_type);
 		}
 
 		SetInt(si, "EmuCore/Speedhacks", "EECycleRate", 0);
@@ -1430,6 +1626,8 @@ namespace
 		if (output_path_for_defaults.empty())
 			output_path_for_defaults = !options.replay_state_output_path.empty() ?
 				options.replay_state_output_path : options.replay_state_input_path;
+		if (output_path_for_defaults.empty())
+			output_path_for_defaults = options.pcsx2_state_input_path;
 		EmuFolders::DataRoot = options.data_root.empty() ?
 			Path::Combine(Path::GetDirectory(output_path_for_defaults), "pcsx2-trace-data") :
 			options.data_root;
@@ -1487,7 +1685,33 @@ namespace
 		return true;
 	}
 
-	void NotifyReplayTraceStart();
+	void NotifyRestoredStateTraceStart();
+
+	bool BeginPcsx2StateContinuation(const TraceOptions& options, Error* error)
+	{
+		if (options.pcsx2_state_input_path.empty())
+			return true;
+
+		// VMManager::Initialize() has already restored the native state through
+		// VMBootParameters::save_state. Begin the portable-export observation
+		// window before one guest instruction can execute, then arm traces at the
+		// restored architectural PC because the ELF-entry hook will not recur.
+		if (EmuConfig.DEV9.EthEnable || EmuConfig.DEV9.HddEnable)
+		{
+			Error::SetString(error,
+				"PCSX2 savestate staging requires DEV9 Ethernet and HDD disabled.");
+			return false;
+		}
+		Pcsx2Trace::BeginPortableReplayExternalDeviceAccessWindow();
+		NotifyRestoredStateTraceStart();
+		if (options.replay_state_checkpoint_start &&
+			!Pcsx2Trace::RecordMachineCheckpointAtReplayStart())
+		{
+			Error::SetString(error, Pcsx2Trace::GetMachineCheckpointTraceError());
+			return false;
+		}
+		return true;
+	}
 
 	bool LoadReplayState(const TraceOptions& options, Error* error)
 	{
@@ -1509,7 +1733,9 @@ namespace
 			return false;
 
 		const PortableStateLoadResult load_result =
-			SaveState_LoadPortableState(*entries, error);
+			SaveState_LoadPortableState(*entries, error,
+				options.pad1_dualshock2 || options.pad_pulse_script ||
+					options.pad_auto_fire_button != PadAutoFireButton::None);
 		if (load_result != PortableStateLoadResult::Loaded)
 			return false;
 
@@ -1520,7 +1746,7 @@ namespace
 			return false;
 		}
 		Pcsx2Trace::BeginPortableReplayExternalDeviceAccessWindow();
-		NotifyReplayTraceStart();
+		NotifyRestoredStateTraceStart();
 		if (options.replay_state_checkpoint_start &&
 			!Pcsx2Trace::RecordMachineCheckpointAtReplayStart())
 		{
@@ -1557,7 +1783,7 @@ namespace
 		return true;
 	}
 
-	void NotifyReplayTraceStart()
+	void NotifyRestoredStateTraceStart()
 	{
 		// The restored state already marks the ELF as executed, so the normal ELF
 		// hook will not run again. Arm every trace at the loaded architectural PC
@@ -1694,6 +1920,7 @@ namespace
 			trace_config.match_pc_only = options.ee_match_pc_only;
 			trace_config.defer_match_limit_until_mem_trace = options.mem_sample_ee_trace && !options.mem_output_path.empty();
 			trace_config.wait_for_elf_entry = options.wait_for_elf_entry;
+			trace_config.capture_vu0_state = options.ee_vu0_state;
 			trace_config.record_elf_entry_state = options.ee_entry_state;
 			if (!Pcsx2Trace::StartEeTrace(trace_config, &error))
 			{
@@ -2005,6 +2232,7 @@ namespace
 		boot.fullscreen = false;
 		boot.start_unlimited = false;
 		boot.disable_achievements_hardcore_mode = true;
+		boot.save_state = options.pcsx2_state_input_path;
 
 		const VMBootResult boot_result = VMManager::Initialize(boot, &error);
 		if (boot_result != VMBootResult::StartupSuccess)
@@ -2037,9 +2265,10 @@ namespace
 			VMManager::Internal::CPUThreadShutdown();
 			return 3;
 		}
-		if (!LoadReplayState(options, &error))
+		if (!BeginPcsx2StateContinuation(options, &error) ||
+			!LoadReplayState(options, &error))
 		{
-			std::fprintf(stderr, "Failed to load replay state: %s\n",
+			std::fprintf(stderr, "Failed to start restored state: %s\n",
 				error.GetDescription().c_str());
 			if (machine_checkpoint_trace_started)
 				Pcsx2Trace::StopMachineCheckpointTrace();
@@ -2068,12 +2297,42 @@ namespace
 			return 3;
 		}
 		VMManager::SetState(VMState::Running);
+		s_pad_script_entry_cycle = 0;
+		s_pad_script_state = 0;
 		s_pad_pulse_script_enabled = options.pad_pulse_script;
+		s_pad_auto_fire_button = options.pad_auto_fire_button;
+		s_pad_auto_fire_pressed_frames = options.pad_auto_fire_pressed_frames;
+		s_pad_auto_fire_released_frames = options.pad_auto_fire_released_frames;
+		s_pad_auto_fire_entry_frame = 0;
+		s_pad_auto_fire_last_frame = 0;
+		s_pad_auto_fire_press_edges = 0;
+		s_pad_auto_fire_release_edges = 0;
+		s_pad_auto_fire_initialized = false;
+		s_pad_auto_fire_pressed = false;
 		s_stop_after_sif_limit = options.stop_after_sif_limit;
 		s_machine_checkpoint_trace_enabled = machine_checkpoint_trace_started;
-		if (options.pad_pulse_script || core_event_trace_started ||
+		// Vita's workload loader presents phase zero immediately after the
+		// portable state is restored and before one guest instruction can run.
+		// Do not defer the oracle's first edge to its next scheduler callback.
+		if (!options.replay_state_input_path.empty() &&
+			options.pad_auto_fire_button != PadAutoFireButton::None)
+		{
+			UpdatePadPulseScript();
+		}
+		if (options.pad_pulse_script ||
+			options.pad_auto_fire_button != PadAutoFireButton::None ||
+			core_event_trace_started ||
 			machine_checkpoint_trace_started || s_stop_after_sif_limit)
 			Pcsx2Trace::SetCoreEventSchedulerCallback(UpdatePadPulseScript);
+		if (options.pad_auto_fire_button != PadAutoFireButton::None)
+		{
+			std::fprintf(stdout,
+				"pad autofire: button=%s pressed_frames=%u released_frames=%u start=%s\n",
+				PadAutoFireButtonName(options.pad_auto_fire_button),
+				options.pad_auto_fire_pressed_frames,
+				options.pad_auto_fire_released_frames,
+				options.replay_state_input_path.empty() ? "game-elf" : "replay-state");
+		}
 		const auto auxiliary_trace_failed = [&]() {
 			return
 				(ee_trace_started && !Pcsx2Trace::GetEeTraceError().empty()) ||
@@ -2111,6 +2370,16 @@ namespace
 					 !(s_stop_after_sif_limit && Pcsx2Trace::DidSifTraceHitLimit()))));
 		}
 		Pcsx2Trace::SetCoreEventSchedulerCallback(nullptr);
+		if (s_pad_auto_fire_button != PadAutoFireButton::None)
+		{
+			const u32 input = s_pad_auto_fire_button == PadAutoFireButton::Cross ?
+				PadDualshock2::Inputs::PAD_CROSS : PadDualshock2::Inputs::PAD_CIRCLE;
+			Pad::SetControllerState(0, input, 0.0f);
+			std::fprintf(stdout,
+				"pad autofire edges: press=%u release=%u\n",
+				s_pad_auto_fire_press_edges, s_pad_auto_fire_release_edges);
+			s_pad_auto_fire_button = PadAutoFireButton::None;
+		}
 		s_machine_checkpoint_trace_enabled = false;
 		if (options.ee_entry_state)
 		{
@@ -2123,7 +2392,8 @@ namespace
 		}
 		bool replay_external_device_accesses_valid = true;
 		std::string replay_external_device_accesses_error;
-		if (!options.replay_state_input_path.empty())
+		if (!options.pcsx2_state_input_path.empty() ||
+			!options.replay_state_input_path.empty())
 		{
 			Error access_error;
 			replay_external_device_accesses_valid =
