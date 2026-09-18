@@ -274,6 +274,14 @@ bool SaveStateBase::FreezeInternals(Error* error)
 
 	if (IsPortableReplay() && IsSaving())
 	{
+		// Count is affine while Status.IM7 is clear. Portable replay is an
+		// architectural observation shared with hosts which retain Count lazily,
+		// so publish its value at the captured EE cycle before encoding cpuRegs.
+		COP0_UpdateCount();
+	}
+
+	if (IsPortableReplay() && IsSaving())
+	{
 		// MachineCheckpointTrace.cpp::CaptureRecord() owns this cross-provider
 		// distinction: code is decoder scratch, not the instruction at the
 		// architectural PC. Canonicalize it without mutating the running VM so an
@@ -976,11 +984,12 @@ std::unique_ptr<ArchiveEntryList> SaveState_DownloadPortableState(Error* error)
 	}
 	for (u32 port = 0; port < Pad::NUM_CONTROLLER_PORTS; port++)
 	{
-		if (!Pad::GetPad(static_cast<u8>(port)) ||
-			Pad::GetPad(static_cast<u8>(port))->GetType() != Pad::ControllerType::NotConnected)
+		PadBase* const pad = Pad::GetPad(static_cast<u8>(port));
+		if (!pad || !Pad::IsPortableReplayControllerTypeSupported(
+				static_cast<u8>(port), pad->GetType()))
 		{
 			Error::SetStringView(error,
-				"Portable replay capture currently requires every pad port disconnected.");
+				"Portable replay capture supports one DualShock 2 in port 1 and disconnected remaining slots.");
 			return nullptr;
 		}
 	}
@@ -1060,7 +1069,7 @@ std::unique_ptr<ArchiveEntryList> SaveState_DownloadPortableState(Error* error)
 }
 
 PortableStateLoadResult SaveState_LoadPortableState(
-	const ArchiveEntryList& entries, Error* error)
+	const ArchiveEntryList& entries, Error* error, bool preserve_configured_pads)
 {
 	if (EmuConfig.Cpu.Recompiler.EnableEECache || !isCacheEmpty())
 	{
@@ -1083,11 +1092,12 @@ PortableStateLoadResult SaveState_LoadPortableState(
 	}
 	for (u32 port = 0; port < Pad::NUM_CONTROLLER_PORTS; port++)
 	{
-		if (!Pad::GetPad(static_cast<u8>(port)) ||
-			Pad::GetPad(static_cast<u8>(port))->GetType() != Pad::ControllerType::NotConnected)
+		PadBase* const pad = Pad::GetPad(static_cast<u8>(port));
+		if (!pad || !Pad::IsPortableReplayControllerTypeSupported(
+				static_cast<u8>(port), pad->GetType()))
 		{
 			Error::SetStringView(error,
-				"Portable replay load currently requires every pad port disconnected.");
+				"Portable replay load supports one DualShock 2 in port 1 and disconnected remaining slots.");
 			return PortableStateLoadResult::RejectedBeforeMutation;
 		}
 	}
@@ -1206,9 +1216,11 @@ PortableStateLoadResult SaveState_LoadPortableState(
 		return PortableStateLoadResult::FailedAfterMutation;
 	}
 
+	bool (*const pad_loader)(StateWrapper&) = preserve_configured_pads ?
+		&Pad::FreezePortableReplayWithConfiguredPads : &Pad::Freeze;
 	if (!LoadPortableStateWrapperEntry(GetPortableEntrySpan(entries, 11), &SPU2::DoPortableState) ||
 		!LoadPortableStateWrapperEntry(GetPortableEntrySpan(entries, 12), &USB::DoState) ||
-		!LoadPortableStateWrapperEntry(GetPortableEntrySpan(entries, 13), &Pad::Freeze) ||
+		!LoadPortableStateWrapperEntry(GetPortableEntrySpan(entries, 13), pad_loader) ||
 		!LoadPortableLegacyComponent(GetPortableEntrySpan(entries, 14), GS))
 	{
 		Error::SetString(error, "Portable replay device state is corrupt or under-consumed.");

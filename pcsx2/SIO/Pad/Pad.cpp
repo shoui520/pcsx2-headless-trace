@@ -536,6 +536,17 @@ bool Pad::HasConnectedPad(u8 unifiedSlot)
 		unifiedSlot < NUM_CONTROLLER_PORTS && s_controllers[unifiedSlot]->GetType() != ControllerType::NotConnected);
 }
 
+bool Pad::IsPortableReplayControllerTypeSupported(
+	u8 unifiedSlot, ControllerType type)
+{
+	// PadBase::Freeze() and PadDualshock2::Freeze() serialize only emulated
+	// controller protocol/configuration state. Live host buttons and axes are
+	// supplied separately by InputManager and are deliberately absent from the
+	// state. This makes port 1's DS2 transport host independent.
+	return type == ControllerType::NotConnected ||
+		(unifiedSlot == 0 && type == ControllerType::DualShock2);
+}
+
 PadBase* Pad::GetPad(u8 port, u8 slot)
 {
 	const u8 unifiedSlot = sioConvertPortAndSlotToPad(port, slot);
@@ -562,9 +573,10 @@ bool Pad::Freeze(StateWrapper& sw)
 		for (u32 unifiedSlot = 0; unifiedSlot < NUM_CONTROLLER_PORTS; unifiedSlot++)
 		{
 			PadBase* pad = GetPad(static_cast<u8>(unifiedSlot));
-			if (!pad || pad->GetType() != ControllerType::NotConnected)
+			if (!pad || !IsPortableReplayControllerTypeSupported(
+					static_cast<u8>(unifiedSlot), pad->GetType()))
 			{
-				Console.Error("Portable PAD state requires slot %u to be disconnected.", unifiedSlot);
+				Console.Error("Portable PAD state contains an unsupported controller in slot %u.", unifiedSlot);
 				sw.SetError();
 				return false;
 			}
@@ -582,15 +594,23 @@ bool Pad::Freeze(StateWrapper& sw)
 		for (u32 unifiedSlot = 0; unifiedSlot < NUM_CONTROLLER_PORTS; unifiedSlot++)
 		{
 			PadBase* currentPad = GetPad(unifiedSlot);
-			ControllerType statePadType;
+			ControllerType statePadType = ControllerType::NotConnected;
 
 			sw.Do(&statePadType);
 
 			if (sw.HasError())
 				return false;
-			if (sw.IsPortableReplay() && statePadType != ControllerType::NotConnected)
+			if (sw.IsPortableReplay() && !IsPortableReplayControllerTypeSupported(
+					static_cast<u8>(unifiedSlot), statePadType))
 			{
-				Console.Error("Portable PAD state contains a connected controller in slot %u.", unifiedSlot);
+				Console.Error("Portable PAD state contains an unsupported controller in slot %u.", unifiedSlot);
+				sw.SetError();
+				return false;
+			}
+			if (sw.IsPortableReplay() && currentPad &&
+				currentPad->GetType() != statePadType)
+			{
+				Console.Error("Portable PAD state/controller configuration mismatch in slot %u.", unifiedSlot);
 				sw.SetError();
 				return false;
 			}
@@ -653,6 +673,60 @@ bool Pad::Freeze(StateWrapper& sw)
 			sw.Do(&type);
 			if (sw.HasError() || !pad->Freeze(sw))
 				return false;
+		}
+	}
+
+	return !sw.HasError();
+}
+
+bool Pad::FreezePortableReplayWithConfiguredPads(StateWrapper& sw)
+{
+	if (!sw.IsPortableReplay() || !sw.IsReading() || !sw.DoMarker("PAD"))
+	{
+		sw.SetError();
+		return false;
+	}
+
+	for (u32 unified_slot = 0; unified_slot < NUM_CONTROLLER_PORTS; unified_slot++)
+	{
+		PadBase* current_pad = GetPad(unified_slot);
+		if (!current_pad)
+		{
+			sw.SetError();
+			return false;
+		}
+
+		const ControllerType configured_type = current_pad->GetType();
+		ControllerType state_type = ControllerType::NotConnected;
+		sw.Do(&state_type);
+		if (sw.HasError() ||
+			!IsPortableReplayControllerTypeSupported(
+				static_cast<u8>(unified_slot), configured_type) ||
+			!IsPortableReplayControllerTypeSupported(
+				static_cast<u8>(unified_slot), state_type) ||
+			(state_type != configured_type &&
+				state_type != ControllerType::NotConnected))
+		{
+			Console.Error("Portable PAD state/controller configuration mismatch in slot %u.", unified_slot);
+			sw.SetError();
+			return false;
+		}
+
+		if (configured_type != state_type)
+		{
+			current_pad = CreatePad(unified_slot, state_type);
+			if (!current_pad || !current_pad->Freeze(sw))
+				return false;
+
+			// Backward compatibility for a legacy disconnected payload. This is
+			// host replay setup, not a PS2 hot-plug event: restore the configured
+			// controller with no ejection interval before the first guest step.
+			if (!CreatePad(unified_slot, configured_type))
+				return false;
+		}
+		else if (!current_pad->Freeze(sw))
+		{
+			return false;
 		}
 	}
 

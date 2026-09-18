@@ -68,7 +68,8 @@ extern std::unique_ptr<ArchiveEntryList> SaveState_DownloadPortableState(Error* 
 // live VM untouched; FailedAfterMutation requires the caller to destroy/reset
 // the VM and forbids resuming guest execution.
 extern PortableStateLoadResult SaveState_LoadPortableState(
-	const ArchiveEntryList& entries, Error* error);
+	const ArchiveEntryList& entries, Error* error,
+	bool preserve_configured_pads = false);
 extern std::unique_ptr<SaveStateScreenshotData> SaveState_SaveScreenshot();
 extern bool SaveState_ZipToDisk(
 	std::unique_ptr<ArchiveEntryList> srclist, std::unique_ptr<SaveStateScreenshotData> screenshot,

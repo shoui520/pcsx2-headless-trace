@@ -59,6 +59,9 @@ namespace Pad
 	std::string GetConfigSection(u32 pad_index);
 
 	bool HasConnectedPad(u8 unifiedSlot);
+	// Portable replay currently supports a host-independent port-1 DualShock 2
+	// and disconnected remaining slots.
+	bool IsPortableReplayControllerTypeSupported(u8 unifiedSlot, ControllerType type);
 
 	PadBase* GetPad(u8 port, u8 slot);
 	PadBase* GetPad(const u8 unifiedSlot);
@@ -67,6 +70,10 @@ namespace Pad
 	void SetControllerState(u32 controller, u32 bind, float value);
 
 	bool Freeze(StateWrapper& sw);
+	// Replay-only loading seam: load exact matching portable controller state.
+	// Legacy disconnected-pad payloads retain the controller types selected by
+	// this host without simulating a guest-visible eject interval.
+	bool FreezePortableReplayWithConfiguredPads(StateWrapper& sw);
 
 	// Sets the state of the specified macro button.
 	void SetMacroButtonState(InputBindingKey& key, u32 pad, u32 index, bool state);

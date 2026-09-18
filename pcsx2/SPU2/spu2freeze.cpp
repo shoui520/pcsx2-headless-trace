@@ -4,6 +4,7 @@
 #include "SPU2/defs.h"
 #include "SPU2/spu2.h" // hopefully temporary, until I resolve lClocks depdendency
 #include "IopMem.h"
+#include "R3000A.h"
 #include "StateWrapper.h"
 
 #include <array>
@@ -443,6 +444,14 @@ namespace SPU2Savestate
 bool SPU2::DoPortableState(StateWrapper& sw)
 {
 	using namespace SPU2Savestate;
+
+	if (sw.IsWriting())
+	{
+		// A portable replay is an SPU2 observation. Materialize every sample due
+		// at the captured IOP cycle so hosts which batch periodic mixing encode
+		// the same architectural state as the scalar PCSX2 scheduler.
+		TimeUpdate(psxRegs.cycle);
+	}
 
 	std::array<s32, 2> dma_offsets = {{PORTABLE_NULL_IOP_OFFSET, PORTABLE_NULL_IOP_OFFSET}};
 	std::array<s32, 2> dma_read_offsets = {{PORTABLE_NULL_IOP_OFFSET, PORTABLE_NULL_IOP_OFFSET}};
