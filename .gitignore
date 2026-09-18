@@ -98,6 +98,7 @@ oprofile_data/
 /bin-arm64
 
 # Manually added by user.
+/bin/patches.zip
 /bin/resources/patches.zip
 
 # Resources that are runtime downloaded.

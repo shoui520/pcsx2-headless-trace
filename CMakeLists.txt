@@ -47,7 +47,9 @@ add_subdirectory(common)
 
 # make pcsx2
 add_subdirectory(pcsx2)
-add_subdirectory(pcsx2-trace)
+if(PCSX2_TRACE_ONLY)
+	add_subdirectory(pcsx2-trace)
+endif()
 
 if(ENABLE_QT_UI)
 	add_subdirectory(pcsx2-qt)

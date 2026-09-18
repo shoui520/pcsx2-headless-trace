@@ -1597,8 +1597,7 @@ namespace
 	bool InitializeConfig(const TraceOptions& options, Error* error)
 	{
 		EmuFolders::SetAppRoot();
-		EmuFolders::Resources = Path::Canonicalize(Path::Combine(PCSX2_TRACE_SOURCE_ROOT, "bin/resources"));
-		if (!FileSystem::DirectoryExists(EmuFolders::Resources.c_str()))
+		if (!EmuFolders::SetResourcesDirectory())
 		{
 			Error::SetStringFmt(error, "PCSX2 resources directory '{}' does not exist.", EmuFolders::Resources);
 			return false;
