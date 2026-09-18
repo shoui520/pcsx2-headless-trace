@@ -20,6 +20,9 @@ private:
 	int m_r_h = 0;
 	int m_layer = 0;
 	u32 m_map_offset = 0;
+#ifdef PCSX2_TRACE_ONLY
+	u8* m_trace_map_pointer = nullptr;
+#endif
 
 	// internal opengl format/type/alignment
 	GLenum m_gl_format = 0;

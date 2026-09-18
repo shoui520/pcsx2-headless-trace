@@ -9504,13 +9504,27 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 		g_gs_device->BeginDSAsRT(m_conf.ds, m_conf.drawarea);
 	}
 	
-	if (GSConfig.SaveHWConfig && GSConfig.ShouldDump(s_n, g_perfmon.GetFrame()))
+	const bool dump_hw_config =
+		GSConfig.SaveHWConfig && GSConfig.ShouldDump(s_n, g_perfmon.GetFrame());
+	const std::string hw_config_path = dump_hw_config ?
+		GetDrawDumpPath("%05d_hwconfig.txt", s_n) : std::string();
+	if (dump_hw_config)
 	{
-		GSHWDrawConfig::DumpConfig(GetDrawDumpPath("%05d_hwconfig.txt", s_n), m_conf);
+		GSHWDrawConfig::DumpConfig(hw_config_path, m_conf,
+			static_cast<u32>(g_perfmon.GetFrame()));
 	}
 
 	if (!m_channel_shuffle_width)
+	{
 		g_gs_device->RenderHW(m_conf);
+		#ifdef PCSX2_TRACE_ONLY
+		GSRecordTextureTraceRenderTargetWrite(m_conf.rt, s_n,
+			m_conf.drawarea, m_conf.colormask.key);
+		if (dump_hw_config)
+			GSAppendTextureTraceRenderTargetResult(hw_config_path,
+				m_conf.rt, m_conf.drawarea);
+		#endif
+	}
 	else
 		m_last_rt = rt;
 

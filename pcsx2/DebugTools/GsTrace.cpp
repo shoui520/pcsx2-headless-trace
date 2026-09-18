@@ -28,6 +28,7 @@ namespace Pcsx2Trace
 		static constexpr u8 GS_TRACE_SOURCE_NONE = 0xff;
 		static constexpr u64 FNV1A64_OFFSET = 14695981039346656037ull;
 		static constexpr u64 FNV1A64_PRIME = 1099511628211ull;
+		static constexpr u64 RAW_STREAM_HASH_BASE = 1099511628211ull;
 
 		struct GsTraceFileHeader
 		{
@@ -130,6 +131,16 @@ namespace Pcsx2Trace
 				hash ^= bytes ? bytes[i] : 0;
 				hash *= FNV1A64_PRIME;
 			}
+			return hash;
+		}
+
+		u64 HashRawStreamBytes(const void* data, size_t size)
+		{
+			const u8* bytes = static_cast<const u8*>(data);
+			u64 hash = 0;
+			for (size_t i = 0; i < size; i++)
+				hash = hash * RAW_STREAM_HASH_BASE +
+					static_cast<u64>(bytes ? bytes[i] : 0) + 1u;
 			return hash;
 		}
 
@@ -416,8 +427,10 @@ namespace Pcsx2Trace
 
 	bool RecordGsRawTransfer(u8 source, const void* data, size_t size)
 	{
+		const u64 stream_hash = HashRawStreamBytes(data, size);
 		return WriteRecord(GsTraceKindRawTransfer, source, 0, 0,
-			static_cast<u64>(size / 16), 0, 0, 0, HashBytes(data, size));
+			static_cast<u64>(size / 16), static_cast<u32>(stream_hash),
+			static_cast<u32>(stream_hash >> 32), 0, HashBytes(data, size));
 	}
 
 	bool RecordGsVSync(u8 phase, u64 ee_cycle)

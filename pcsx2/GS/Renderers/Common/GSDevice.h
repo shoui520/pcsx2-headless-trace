@@ -1322,9 +1322,53 @@ struct alignas(16) GSHWDrawConfig
 
 	// Dumping
 	static void DumpConfig(const std::string& path, const GSHWDrawConfig& conf,
+		u32 frame,
 		bool ps = true, bool vs = true, bool bs = true, bool dss = true, bool ss = true, bool asp = true, bool bmp = true,
 		bool cbvs = true, bool cbps = true);
 };
+
+#ifdef PCSX2_TRACE_ONLY
+// Trace-only logical texture contents. This observes the bytes submitted by
+// PCSX2 rather than driver storage, so the oracle does not depend on OpenGL's
+// private layout or force a GPU readback for every draw.
+struct GSTextureTraceSummary
+{
+	u64 content_hash = 0;
+	u32 content_bytes = 0;
+	u32 channel_or = 0;
+	u32 generation = 0;
+	u32 known_levels = 0;
+};
+
+struct GSTextureTraceRenderTargetSummary
+{
+	static constexpr u32 TileCount = 16;
+	u64 content_hash = 0;
+	u64 generation = 0;
+	u64 writer_draw = 0;
+	u64 channel_hash[4] = {};
+	u64 channel_writer_draw[4] = {};
+	u64 tile_hash[TileCount] = {};
+	u32 content_bytes = 0;
+	u32 channel_or = 0;
+	u32 nonzero_tiles = 0;
+	u32 status = 0;
+};
+
+void GSRecordTextureTraceContent(const GSTexture* texture,
+	const GSVector4i& rect, const void* data, u32 source_pitch,
+	u32 bytes_per_pixel, u32 level);
+void GSForgetTextureTraceContent(const GSTexture* texture);
+GSTextureTraceSummary GSGetTextureTraceSummary(const GSTexture* texture);
+void GSRecordTextureTraceRenderTargetWrite(const GSTexture* texture,
+	u64 writer_draw);
+void GSRecordTextureTraceRenderTargetWrite(const GSTexture* texture,
+	u64 writer_draw, const GSVector4i& drawarea, u8 color_mask);
+GSTextureTraceRenderTargetSummary GSReadTextureTraceRenderTarget(
+	GSTexture* texture, const GSVector4i& rect);
+void GSAppendTextureTraceRenderTargetResult(const std::string& path,
+	GSTexture* texture, const GSVector4i& rect);
+#endif
 
 static inline u32 GetExpansionFactor(GSHWDrawConfig::VSExpand expand)
 {

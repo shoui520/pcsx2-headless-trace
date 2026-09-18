@@ -7,6 +7,10 @@
 #include "GS/GSUtil.h"
 #include "Host.h"
 
+#ifdef PCSX2_TRACE_ONLY
+#include "DebugTools/GsTrace.h"
+#endif
+
 #include "common/Console.h"
 #include "common/BitUtils.h"
 #include "common/FileSystem.h"
@@ -21,8 +25,13 @@
 #endif
 
 #include <algorithm>
-#include <ostream>
 #include <fstream>
+#include <limits>
+#include <ostream>
+#ifdef PCSX2_TRACE_ONLY
+#include <unordered_map>
+#include <vector>
+#endif
 
 const char* ShaderEntryPoint(ShaderConvert value)
 {
@@ -440,6 +449,9 @@ void GSDevice::ThrottlePresentation()
 void GSDevice::ClearRenderTarget(GSTexture* t, u32 c)
 {
 	t->SetClearColor(c);
+#ifdef PCSX2_TRACE_ONLY
+	GSRecordTextureTraceRenderTargetWrite(t, 0);
+#endif
 }
 
 void GSDevice::ClearDepth(GSTexture* t, float d)
@@ -847,6 +859,9 @@ void GSDevice::StretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* d
 	ShaderConvertSelector shader, Filter filter)
 {
 	DoStretchRectWithAssertions(sTex, sRect, dTex, dRect, shader, filter);
+#ifdef PCSX2_TRACE_ONLY
+	GSRecordTextureTraceRenderTargetWrite(dTex, 0);
+#endif
 }
 
 void GSDevice::StretchRect(GSTexture* sTex, GSTexture* dTex, const GSVector4& dRect, ShaderConvertSelector shader, Filter filter)
@@ -1537,6 +1552,33 @@ static const char* GetTexHazardName(u32 tex_hazard)
 	return "Unknown";
 }
 
+static const char* GetTextureTypeName(GSTexture::Type type)
+{
+	switch (type)
+	{
+		case GSTexture::Type::Invalid: return "Invalid";
+		case GSTexture::Type::RenderTarget: return "RenderTarget";
+		case GSTexture::Type::DepthStencil: return "DepthStencil";
+		case GSTexture::Type::Texture: return "Texture";
+		case GSTexture::Type::RWTexture: return "RWTexture";
+	}
+	return "Unknown";
+}
+
+static void DumpTextureDescriptor(DrawConfigWriter& out, const char* name, const GSTexture* texture)
+{
+	if (!texture)
+	{
+		out.WriteLn("{}: none", name);
+		return;
+	}
+
+	out.WriteLn("{}: [{}, {}, {} ({}), {} ({}), {}]", name, texture->GetWidth(), texture->GetHeight(),
+		GetTextureTypeName(texture->GetType()), static_cast<u32>(texture->GetType()),
+		GSTexture::GetFormatName(texture->GetFormat()), static_cast<u32>(texture->GetFormat()),
+		texture->GetMipmapLevels());
+}
+
 static const char* GetPSROVDepthname(GSHWDrawConfig::PS_ROV_DEPTH rov_depth)
 {
 	switch (rov_depth)
@@ -1729,9 +1771,426 @@ static void DumpVSConstantBuffer(DrawConfigWriter& out, const GSHWDrawConfig::VS
 	out.WriteLn("line_aa1_width: {}", cb.line_aa1_width);
 }
 
+static u64 HashDrawBytes(const void* data, size_t size)
+{
+	if (!data || size == 0)
+		return 0;
+	const u8* bytes = static_cast<const u8*>(data);
+	u64 hash = 14695981039346656037ull;
+	for (size_t i = 0; i < size; i++)
+		hash = (hash ^ bytes[i]) * 1099511628211ull;
+	return hash;
+}
+
+#ifdef PCSX2_TRACE_ONLY
+namespace
+{
+	constexpr u64 TEXTURE_TRACE_FNV_OFFSET = 14695981039346656037ull;
+	constexpr u64 TEXTURE_TRACE_FNV_PRIME = 1099511628211ull;
+
+	struct TextureTraceLevel
+	{
+		std::vector<u8> pixels;
+		std::vector<u8> known_pixels;
+		u32 width = 0;
+		u32 height = 0;
+		u32 bytes_per_pixel = 0;
+		u32 known_count = 0;
+	};
+
+	struct TextureTraceStorage
+	{
+		struct RenderTargetWriter
+		{
+			u64 generation = 0;
+			u64 draw = 0;
+			GSVector4i drawarea = {};
+			u8 color_mask = 0;
+		};
+
+		std::vector<TextureTraceLevel> levels;
+		u32 generation = 0;
+		std::vector<u8> render_target_pixels;
+		u64 render_target_generation = 0;
+		u64 render_target_readback_generation = std::numeric_limits<u64>::max();
+		u64 render_target_writer_draw = 0;
+		std::vector<RenderTargetWriter> render_target_writers;
+		u32 render_target_width = 0;
+		u32 render_target_height = 0;
+		u32 render_target_pitch = 0;
+		u32 render_target_bytes_per_pixel = 0;
+	};
+
+	std::unordered_map<const GSTexture*, TextureTraceStorage> s_texture_trace_storage;
+
+	void TextureTraceHashByte(u64& hash, u8 value)
+	{
+		hash = (hash ^ value) * TEXTURE_TRACE_FNV_PRIME;
+	}
+
+	void TextureTraceHashU32(u64& hash, u32 value)
+	{
+		for (u32 shift = 0; shift < 32; shift += 8)
+			TextureTraceHashByte(hash, static_cast<u8>(value >> shift));
+	}
+}
+
+void GSRecordTextureTraceContent(const GSTexture* texture,
+	const GSVector4i& rect, const void* data, u32 source_pitch,
+	u32 bytes_per_pixel, u32 level)
+{
+	if (!texture || !data || bytes_per_pixel == 0 || level >= 32 ||
+		rect.x < 0 || rect.y < 0 || rect.z <= rect.x || rect.w <= rect.y)
+	{
+		return;
+	}
+
+	const u32 width = std::max(1, texture->GetWidth() >> level);
+	const u32 height = std::max(1, texture->GetHeight() >> level);
+	if (static_cast<u32>(rect.z) > width || static_cast<u32>(rect.w) > height ||
+		source_pitch < static_cast<u32>(rect.width()) * bytes_per_pixel)
+	{
+		return;
+	}
+
+	TextureTraceStorage& storage = s_texture_trace_storage[texture];
+	if (storage.levels.size() <= level)
+		storage.levels.resize(level + 1);
+	TextureTraceLevel& level_storage = storage.levels[level];
+	const size_t pixel_count = static_cast<size_t>(width) * height;
+	const size_t byte_count = pixel_count * bytes_per_pixel;
+	if (level_storage.width != width || level_storage.height != height ||
+		level_storage.bytes_per_pixel != bytes_per_pixel ||
+		level_storage.pixels.size() != byte_count)
+	{
+		level_storage = {};
+		level_storage.width = width;
+		level_storage.height = height;
+		level_storage.bytes_per_pixel = bytes_per_pixel;
+		level_storage.pixels.resize(byte_count);
+		level_storage.known_pixels.resize(pixel_count);
+	}
+
+	const u8* source = static_cast<const u8*>(data);
+	const u32 copy_width = static_cast<u32>(rect.width());
+	const u32 copy_height = static_cast<u32>(rect.height());
+	for (u32 y = 0; y < copy_height; y++)
+	{
+		const size_t destination_pixel =
+			(static_cast<size_t>(rect.y + y) * width) + rect.x;
+		std::memcpy(level_storage.pixels.data() +
+				destination_pixel * bytes_per_pixel,
+			source + static_cast<size_t>(y) * source_pitch,
+			static_cast<size_t>(copy_width) * bytes_per_pixel);
+		for (u32 x = 0; x < copy_width; x++)
+		{
+			u8& known = level_storage.known_pixels[destination_pixel + x];
+			if (!known)
+			{
+				known = 1;
+				level_storage.known_count++;
+			}
+		}
+	}
+	storage.generation++;
+}
+
+void GSForgetTextureTraceContent(const GSTexture* texture)
+{
+	s_texture_trace_storage.erase(texture);
+}
+
+GSTextureTraceSummary GSGetTextureTraceSummary(const GSTexture* texture)
+{
+	GSTextureTraceSummary summary;
+	const auto storage_it = s_texture_trace_storage.find(texture);
+	if (storage_it == s_texture_trace_storage.end())
+		return summary;
+
+	const TextureTraceStorage& storage = storage_it->second;
+	summary.generation = storage.generation;
+	summary.content_hash = TEXTURE_TRACE_FNV_OFFSET;
+	for (u32 level = 0; level < storage.levels.size() && level < 32; level++)
+	{
+		const TextureTraceLevel& level_storage = storage.levels[level];
+		const size_t pixel_count =
+			static_cast<size_t>(level_storage.width) * level_storage.height;
+		if (pixel_count == 0 || level_storage.known_count != pixel_count)
+			continue;
+
+		summary.known_levels |= 1u << level;
+		TextureTraceHashU32(summary.content_hash, level);
+		TextureTraceHashU32(summary.content_hash,
+			static_cast<u32>(level_storage.pixels.size()));
+		for (size_t i = 0; i < level_storage.pixels.size(); i++)
+		{
+			const u8 value = level_storage.pixels[i];
+			TextureTraceHashByte(summary.content_hash, value);
+			const u32 channel = i % level_storage.bytes_per_pixel;
+			if (channel < 4)
+				summary.channel_or |= static_cast<u32>(value) << (channel * 8);
+		}
+		summary.content_bytes += static_cast<u32>(level_storage.pixels.size());
+	}
+	if (summary.known_levels == 0)
+		summary.content_hash = 0;
+	return summary;
+}
+
+void GSRecordTextureTraceRenderTargetWrite(const GSTexture* texture,
+	u64 writer_draw)
+{
+	if (!texture)
+		return;
+	GSRecordTextureTraceRenderTargetWrite(texture, writer_draw,
+		GSVector4i(0, 0, texture->GetWidth(), texture->GetHeight()), 0xf);
+}
+
+void GSRecordTextureTraceRenderTargetWrite(const GSTexture* texture,
+	u64 writer_draw, const GSVector4i& drawarea, u8 color_mask)
+{
+	if (!texture)
+		return;
+	TextureTraceStorage& storage = s_texture_trace_storage[texture];
+	storage.render_target_generation++;
+	storage.render_target_writer_draw = writer_draw;
+	storage.render_target_writers.push_back({
+		storage.render_target_generation, writer_draw, drawarea, color_mask});
+}
+
+GSTextureTraceRenderTargetSummary GSReadTextureTraceRenderTarget(
+	GSTexture* texture, const GSVector4i& requested_rect)
+{
+	GSTextureTraceRenderTargetSummary summary;
+	if (!texture || !texture->IsRenderTarget() ||
+		texture->GetFormat() != GSTexture::Format::Color)
+	{
+		summary.status = 3;
+		return summary;
+	}
+
+	TextureTraceStorage& storage = s_texture_trace_storage[texture];
+	const u32 width = static_cast<u32>(texture->GetWidth());
+	const u32 height = static_cast<u32>(texture->GetHeight());
+	constexpr u32 bytes_per_pixel = 4;
+	const u32 pitch = width * bytes_per_pixel;
+	if (storage.render_target_readback_generation !=
+			storage.render_target_generation ||
+		storage.render_target_width != width ||
+		storage.render_target_height != height)
+	{
+		std::unique_ptr<GSDownloadTexture> download(
+			g_gs_device->CreateDownloadTexture(width, height,
+				GSTexture::Format::Color));
+		const GSVector4i full_rect(0, 0, width, height);
+		if (!download)
+		{
+			summary.status = 4;
+			return summary;
+		}
+		download->CopyFromTexture(full_rect, texture, full_rect, 0);
+		download->Flush();
+		if (!download->Map(full_rect))
+		{
+			summary.status = 4;
+			return summary;
+		}
+		storage.render_target_pixels.resize(static_cast<size_t>(pitch) * height);
+		const u8* source = download->GetMapPointer();
+		const u32 source_pitch = download->GetMapPitch();
+		for (u32 y = 0; y < height; y++)
+		{
+			std::memcpy(storage.render_target_pixels.data() +
+					static_cast<size_t>(y) * pitch,
+				source + static_cast<size_t>(y) * source_pitch, pitch);
+		}
+		download->Unmap();
+		storage.render_target_readback_generation =
+			storage.render_target_generation;
+		storage.render_target_width = width;
+		storage.render_target_height = height;
+		storage.render_target_pitch = pitch;
+		storage.render_target_bytes_per_pixel = bytes_per_pixel;
+	}
+
+	const GSVector4i rect = requested_rect.rintersect(
+		GSVector4i(0, 0, width, height));
+	if (rect.rempty())
+	{
+		summary.status = 3;
+		return summary;
+	}
+	summary.content_hash = TEXTURE_TRACE_FNV_OFFSET;
+	for (u32 channel = 0; channel < 4; channel++)
+		summary.channel_hash[channel] = TEXTURE_TRACE_FNV_OFFSET;
+	for (u32 tile = 0; tile < GSTextureTraceRenderTargetSummary::TileCount;
+		tile++)
+	{
+		summary.tile_hash[tile] = TEXTURE_TRACE_FNV_OFFSET;
+	}
+	const u32 row_bytes = static_cast<u32>(rect.width()) * bytes_per_pixel;
+	for (int y = rect.y; y < rect.w; y++)
+	{
+		const u8* row = storage.render_target_pixels.data() +
+			static_cast<size_t>(y) * pitch +
+			static_cast<size_t>(rect.x) * bytes_per_pixel;
+		const u32 tile_y = std::min<u32>(3,
+			(static_cast<u32>(y - rect.y) * 4) /
+			static_cast<u32>(rect.height()));
+		for (u32 x = 0; x < row_bytes; x++)
+		{
+			TextureTraceHashByte(summary.content_hash, row[x]);
+			const u32 channel = x % bytes_per_pixel;
+			TextureTraceHashByte(summary.channel_hash[channel], row[x]);
+			summary.channel_or |= static_cast<u32>(row[x]) << (channel * 8);
+			const u32 pixel = x / bytes_per_pixel;
+			const u32 tile_x = std::min<u32>(3,
+				(pixel * 4) / static_cast<u32>(rect.width()));
+			const u32 tile = tile_y * 4 + tile_x;
+			TextureTraceHashByte(summary.tile_hash[tile], row[x]);
+			if (row[x] != 0)
+				summary.nonzero_tiles |= 1u << tile;
+		}
+	}
+	summary.generation = storage.render_target_generation;
+	u64 best_channel_area[4] = {};
+	bool found_writer = false;
+	for (auto it = storage.render_target_writers.rbegin();
+		it != storage.render_target_writers.rend(); ++it)
+	{
+		if (it->generation > storage.render_target_generation)
+			continue;
+		const GSVector4i overlap = rect.rintersect(it->drawarea);
+		if (overlap.rempty())
+			continue;
+		const u64 area = static_cast<u64>(overlap.width()) * overlap.height();
+		if (!found_writer)
+		{
+			summary.writer_draw = it->draw;
+			found_writer = true;
+		}
+		for (u32 channel = 0; it->draw != 0 && channel < 4; channel++)
+		{
+			if ((it->color_mask & (1u << channel)) != 0 &&
+				area > best_channel_area[channel])
+			{
+				best_channel_area[channel] = area;
+				summary.channel_writer_draw[channel] = it->draw;
+			}
+		}
+	}
+	summary.content_bytes = row_bytes * rect.height();
+	summary.status = 1;
+	return summary;
+}
+
+void GSAppendTextureTraceRenderTargetResult(const std::string& path,
+	GSTexture* texture, const GSVector4i& rect)
+{
+	const GSTextureTraceRenderTargetSummary summary =
+		GSReadTextureTraceRenderTarget(texture, rect);
+	FILE* const file = FileSystem::OpenCFile(path.c_str(), "ab");
+	if (!file)
+		return;
+	std::fprintf(file, "rt_after_content_hash: 0x%016llx\n",
+		static_cast<unsigned long long>(summary.content_hash));
+	std::fprintf(file, "rt_after_generation: %llu\n",
+		static_cast<unsigned long long>(summary.generation));
+	for (u32 channel = 0; channel < 4; channel++)
+	{
+		static constexpr char names[4] = {'r', 'g', 'b', 'a'};
+		std::fprintf(file, "rt_after_channel_hash_%c: 0x%016llx\n",
+			names[channel],
+			static_cast<unsigned long long>(summary.channel_hash[channel]));
+	}
+	for (u32 tile = 0; tile < GSTextureTraceRenderTargetSummary::TileCount;
+		tile++)
+	{
+		std::fprintf(file, "rt_after_tile_hash_%02u: 0x%016llx\n", tile,
+			static_cast<unsigned long long>(summary.tile_hash[tile]));
+	}
+	std::fprintf(file, "rt_after_content_bytes: %u\n",
+		summary.content_bytes);
+	std::fprintf(file, "rt_after_channel_or: 0x%08x\n", summary.channel_or);
+	std::fprintf(file, "rt_after_status: %u\n", summary.status);
+	std::fprintf(file, "rt_after_nonzero_tiles: 0x%04x\n",
+		summary.nonzero_tiles);
+	std::fclose(file);
+}
+#endif
+
 static void DumpConfig(DrawConfigWriter& out, const GSHWDrawConfig& conf,
 	bool ps, bool vs, bool bs, bool dss, bool ss, bool asp, bool bmp, bool cbvs, bool cbps)
 {
+#ifdef PCSX2_TRACE_ONLY
+	out.WriteLn("source: {}", Pcsx2Trace::ResolveGsTraceSource(0xff));
+#endif
+	DumpTextureDescriptor(out, "rt", conf.rt);
+	DumpTextureDescriptor(out, "ds", conf.ds);
+	DumpTextureDescriptor(out, "tex", conf.tex);
+	DumpTextureDescriptor(out, "pal", conf.pal);
+	out.WriteLn("nverts: {}", conf.nverts);
+	out.WriteLn("nindices: {}", conf.nindices);
+	out.WriteLn("indices_per_prim: {}", conf.indices_per_prim);
+	out.WriteLn("cb_vs_hash: 0x{:016x}", HashDrawBytes(&conf.cb_vs, sizeof(conf.cb_vs)));
+	out.WriteLn("cb_ps_hash: 0x{:016x}", HashDrawBytes(&conf.cb_ps, sizeof(conf.cb_ps)));
+	out.WriteLn("vertex_hash: 0x{:016x}",
+		HashDrawBytes(conf.verts, static_cast<size_t>(conf.nverts) * sizeof(GSVertex)));
+	out.WriteLn("index_hash: 0x{:016x}",
+		HashDrawBytes(conf.indices, static_cast<size_t>(conf.nindices) * sizeof(u16)));
+#ifdef PCSX2_TRACE_ONLY
+	for (u32 i = 0; i < std::min<u32>(conf.nverts, 4); i++)
+	{
+		const GSVertex& vertex = conf.verts[i];
+		out.WriteLn("vertex_rgba_{}: 0x{:08x}", i, vertex.RGBAQ.U32[0]);
+		out.WriteLn("vertex_xy_{}: 0x{:08x}", i,
+			static_cast<u32>(vertex.XYZ.X) |
+			(static_cast<u32>(vertex.XYZ.Y) << 16));
+		out.WriteLn("vertex_z_{}: 0x{:08x}", i, vertex.XYZ.Z);
+		out.WriteLn("vertex_uv_{}: 0x{:08x}", i, vertex.UV);
+	}
+#endif
+#ifdef PCSX2_TRACE_ONLY
+	const GSTextureTraceSummary texture_summary =
+		GSGetTextureTraceSummary(conf.tex);
+	out.WriteLn("tex_content_hash: 0x{:016x}", texture_summary.content_hash);
+	out.WriteLn("tex_content_bytes: {}", texture_summary.content_bytes);
+	out.WriteLn("tex_channel_or: 0x{:08x}", texture_summary.channel_or);
+	out.WriteLn("tex_content_generation: {}", texture_summary.generation);
+	out.WriteLn("tex_content_levels: 0x{:08x}", texture_summary.known_levels);
+	const GSTextureTraceSummary palette_summary =
+		GSGetTextureTraceSummary(conf.pal);
+	out.WriteLn("pal_content_hash: 0x{:016x}", palette_summary.content_hash);
+	out.WriteLn("pal_content_bytes: {}", palette_summary.content_bytes);
+	out.WriteLn("pal_channel_or: 0x{:08x}", palette_summary.channel_or);
+	out.WriteLn("pal_content_generation: {}", palette_summary.generation);
+	out.WriteLn("pal_content_levels: 0x{:08x}", palette_summary.known_levels);
+	const GSTextureTraceRenderTargetSummary rt_source_summary =
+		GSReadTextureTraceRenderTarget(conf.tex, conf.samplearea);
+	out.WriteLn("rt_source_content_hash: 0x{:016x}",
+		rt_source_summary.content_hash);
+	out.WriteLn("rt_source_channel_hash_r: 0x{:016x}",
+		rt_source_summary.channel_hash[0]);
+	out.WriteLn("rt_source_channel_hash_g: 0x{:016x}",
+		rt_source_summary.channel_hash[1]);
+	out.WriteLn("rt_source_channel_hash_b: 0x{:016x}",
+		rt_source_summary.channel_hash[2]);
+	out.WriteLn("rt_source_channel_hash_a: 0x{:016x}",
+		rt_source_summary.channel_hash[3]);
+	out.WriteLn("rt_source_generation: {}", rt_source_summary.generation);
+	out.WriteLn("rt_source_content_bytes: {}", rt_source_summary.content_bytes);
+	out.WriteLn("rt_source_channel_or: 0x{:08x}", rt_source_summary.channel_or);
+	out.WriteLn("rt_source_writer_draw: {}", rt_source_summary.writer_draw);
+	out.WriteLn("rt_source_channel_writer_r: {}",
+		rt_source_summary.channel_writer_draw[0]);
+	out.WriteLn("rt_source_channel_writer_g: {}",
+		rt_source_summary.channel_writer_draw[1]);
+	out.WriteLn("rt_source_channel_writer_b: {}",
+		rt_source_summary.channel_writer_draw[2]);
+	out.WriteLn("rt_source_channel_writer_a: {}",
+		rt_source_summary.channel_writer_draw[3]);
+	out.WriteLn("rt_source_status: {}", rt_source_summary.status);
+#endif
 	out.WriteLn("topology: {} ({})", GetTopologyName(conf.topology), static_cast<u32>(conf.topology));
 	out.WriteLn("require_one_barrier: {}", conf.require_one_barrier);
 	out.WriteLn("require_full_barrier: {}", conf.require_full_barrier);
@@ -1800,11 +2259,13 @@ static void DumpConfig(DrawConfigWriter& out, const GSHWDrawConfig& conf,
 }
 
 void GSHWDrawConfig::DumpConfig(const std::string& path, const GSHWDrawConfig& conf,
+	u32 frame,
 	bool ps, bool vs, bool bs, bool dss, bool ss, bool asp, bool bmp, bool cbvs, bool cbps)
 {
 	if (FileSystem::ManagedCFilePtr file = FileSystem::OpenManagedCFile(path.c_str(), "w"))
 	{
 		DrawConfigWriter writer;
+		writer.WriteLn("frame: {}", frame);
 		::DumpConfig(writer, conf, ps, vs, bs, dss, ss, asp, bmp, cbvs, cbps);
 		fwrite(writer.buffer.data(), 1, writer.buffer.size(), file.get());
 	}

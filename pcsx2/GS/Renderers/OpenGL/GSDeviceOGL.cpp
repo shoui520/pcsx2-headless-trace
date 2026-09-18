@@ -15,7 +15,9 @@
 #include "common/ScopedGuard.h"
 #include "common/StringUtil.h"
 
+#ifndef PCSX2_TRACE_ONLY
 #include "imgui.h"
+#endif
 #include "IconsFontAwesome.h"
 
 #include <cinttypes>
@@ -653,8 +655,10 @@ bool GSDeviceOGL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		}
 	}
 
+#ifndef PCSX2_TRACE_ONLY
 	if (!CreateImGuiProgram())
 		return false;
+#endif
 
 	// Basic to ensure structures are correctly packed
 	static_assert(sizeof(VSSelector) == 1, "Wrong VSSelector size");
@@ -1665,7 +1669,12 @@ void GSDeviceOGL::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r
 	if (sTex->GetState() == GSTexture::State::Cleared)
 	{
 		if (dTex->IsRenderTargetOrDepthStencil() && ProcessClearsBeforeCopy(sTex, dTex, full_draw_copy))
+		{
+			#ifdef PCSX2_TRACE_ONLY
+			GSRecordTextureTraceRenderTargetWrite(dTex, 0);
+			#endif
 			return;
+		}
 
 		// Commit clear for the source texture.
 		CommitClear(sTex, false);
@@ -1714,6 +1723,9 @@ void GSDeviceOGL::CopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r
 	}
 
 	dTex->SetState(GSTexture::State::Dirty);
+	#ifdef PCSX2_TRACE_ONLY
+	GSRecordTextureTraceRenderTargetWrite(dTex, 0);
+	#endif
 }
 
 void GSDeviceOGL::DoStretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
@@ -2365,6 +2377,9 @@ bool GSDeviceOGL::DoCAS(GSTexture* sTex, GSTexture* dTex, bool sharpen_only, con
 
 bool GSDeviceOGL::CreateImGuiProgram()
 {
+#ifdef PCSX2_TRACE_ONLY
+	return true;
+#else
 	const std::optional<std::string> glsl = ReadShaderSource("shaders/opengl/imgui.glsl");
 	if (!glsl.has_value())
 	{
@@ -2400,10 +2415,12 @@ bool GSDeviceOGL::CreateImGuiProgram()
 
 	glBindVertexArray(GLState::vao);
 	return true;
+#endif
 }
 
 void GSDeviceOGL::RenderImGui()
 {
+#ifndef PCSX2_TRACE_ONLY
 	ImGui::Render();
 	const ImDrawData* draw_data = ImGui::GetDrawData();
 	if (draw_data->CmdListsCount == 0)
@@ -2487,6 +2504,7 @@ void GSDeviceOGL::RenderImGui()
 
 	IASetVAO(m_vao);
 	glScissor(GLState::scissor.x, GLState::scissor.y, GLState::scissor.width(), GLState::scissor.height());
+#endif
 }
 
 void GSDeviceOGL::RenderBlankFrame()

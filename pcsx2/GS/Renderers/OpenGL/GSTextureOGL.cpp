@@ -161,6 +161,9 @@ GSTextureOGL::GSTextureOGL(Type type, int width, int height, int levels, Format 
 
 GSTextureOGL::~GSTextureOGL()
 {
+#ifdef PCSX2_TRACE_ONLY
+	GSForgetTextureTraceContent(this);
+#endif
 	// Textures aren't cleared from attachments on deletion.
 	GSDeviceOGL::GetInstance()->OMUnbindTexture(this);
 
@@ -192,6 +195,14 @@ bool GSTextureOGL::Update(const GSVector4i& r, const void* data, int pitch, int 
 	// Data upload is rather small typically 64B or 1024B. So don't bother with PBO
 	// and directly send the data to the GL synchronously
 	GSDeviceOGL::GetInstance()->CommitClear(this, true);
+
+#ifdef PCSX2_TRACE_ONLY
+	if (!IsCompressedFormat())
+	{
+		GSRecordTextureTraceContent(this, r, data, static_cast<u32>(pitch),
+			1u << m_int_shift, static_cast<u32>(layer));
+	}
+#endif
 
 	const u32 preferred_pitch = Common::AlignUpPow2(r.width() << m_int_shift, TEXTURE_UPLOAD_PITCH_ALIGNMENT);
 	const u32 map_size = r.height() * preferred_pitch;
@@ -275,6 +286,9 @@ bool GSTextureOGL::Map(GSMap& m, const GSVector4i* _r, int layer)
 
 		const auto map = sb->Map(TEXTURE_UPLOAD_ALIGNMENT, upload_size);
 		m.bits = static_cast<u8*>(map.pointer);
+#ifdef PCSX2_TRACE_ONLY
+		m_trace_map_pointer = m.bits;
+#endif
 
 		// Save the area for the unmap
 		m_r_x = r.x;
@@ -299,6 +313,16 @@ void GSTextureOGL::Unmap()
 		const u32 pitch = Common::AlignUpPow2(m_r_w << m_int_shift, TEXTURE_UPLOAD_PITCH_ALIGNMENT);
 		const u32 upload_size = pitch * m_r_h;
 		GLStreamBuffer* sb = GSDeviceOGL::GetInstance()->GetTextureUploadBuffer();
+#ifdef PCSX2_TRACE_ONLY
+		if (m_trace_map_pointer)
+		{
+			GSRecordTextureTraceContent(this,
+				GSVector4i(m_r_x, m_r_y, m_r_x + m_r_w, m_r_y + m_r_h),
+				m_trace_map_pointer, pitch, 1u << m_int_shift,
+				static_cast<u32>(m_layer));
+			m_trace_map_pointer = nullptr;
+		}
+#endif
 		sb->Unmap(upload_size);
 		sb->Bind();
 
